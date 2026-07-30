@@ -12,10 +12,14 @@ folders that used to be worked on separately:
 Workspace host: `dbc-5a6b7518-84a8.cloud.databricks.com`, catalog `market_data`,
 serverless warehouse `7eb5fd2336243915`.
 
-**Read `docs/state_2026-07-30.md` first.** Two things there matter before you
-trust anything: all three sources stop at **2026-04**, and there are **no
-Databricks Workflows** — the "monthly" cadence is currently a human running
-notebooks by hand.
+The monthly cadence runs as Databricks job **`etl data automobile`** (id
+`647704685836737`), 08:00 on the 15th, `Asia/Ho_Chi_Minh`. The DAG lives in
+`jobs/etl-data-automobile.json` and deploys with `scripts/deploy_job.py` —
+see **`docs/monthly_workflow.md`** for its shape, the non-obvious ordering
+constraints, and the three scheduling bugs that had to be fixed first.
+
+`docs/state_2026-07-30.md` is the data snapshot taken when the folders were
+consolidated; note all three sources stopped at **2026-04** at that point.
 
 ## The three pipelines
 
@@ -107,9 +111,13 @@ update Databricks. Always diff before editing either side:
 pip install -r scripts/requirements.txt
 python scripts/databricks_sync.py diff      # -v for line diffs
 python scripts/databricks_sync.py pull      # workspace -> repo
-python scripts/databricks_sync.py push      # repo -> workspace
-python scripts/export_jobs.py               # Workflow DAGs -> jobs/*.json
+python scripts/databricks_sync.py push      # repo -> workspace  (ships notebooks)
+python scripts/deploy_job.py --dry-run      # jobs/*.json -> Databricks (ships the DAG)
+python scripts/export_jobs.py               # Databricks -> jobs/*.json
 ```
+
+Two separate deploys: `databricks_sync.py push` ships notebook changes,
+`deploy_job.py` ships DAG changes. Pushing to GitHub ships neither.
 
 Auth comes from the `DEFAULT` profile in `~/.databrickscfg`, or from
 `DATABRICKS_HOST` / `DATABRICKS_TOKEN`. A cloud sandbox has neither — add them as

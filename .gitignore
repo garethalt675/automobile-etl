@@ -26,6 +26,10 @@ data/
 *.xlsx
 *.csv
 
+# Diagnostic dump of what is actually deployed (scripts/export_jobs.py).
+# Derived from Databricks, not source - jobs/*.json is the source of truth.
+jobs/exported/
+
 # Editor / OS
 .vscode/
 .idea/

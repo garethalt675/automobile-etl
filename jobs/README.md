@@ -1,8 +1,15 @@
 # Workflow definitions
 
-Empty by design as of 2026-07-30 — the automobile pipeline has no Databricks
-Workflows yet, so `python scripts/export_jobs.py` has nothing to export. Every
-notebook is currently run by hand.
+`etl-data-automobile.json` is the **source of truth** for the monthly job, not a
+dump of it. Edit it here and deploy:
 
-Once monthly jobs exist, name them with a prefix `export_jobs.py` matches (see
-`JOB_NAME_PREFIXES`) and re-run it to land the DAGs here.
+```bash
+python scripts/deploy_job.py --dry-run
+python scripts/deploy_job.py
+```
+
+`deploy_job.py` matches the existing job by name and `reset`s it — a full replace,
+so anything changed in the Databricks UI and not written back here is lost. Run
+`python scripts/export_jobs.py` first if you are not sure the file is current.
+
+See `docs/monthly_workflow.md` for the DAG shape and its ordering constraints.

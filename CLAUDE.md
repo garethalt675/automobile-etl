@@ -5,14 +5,25 @@ data actually looks like. This file is only the things that will bite you.
 
 ## The workspace is authoritative, not this repo
 
-Unlike `customs-etl` (where jobs run `source: GIT` and pushing to `main` is the
-deploy step), here **Databricks runs the workspace copy**. There is no Git folder
-and there are no jobs. So:
+Unlike `customs-etl` (where job tasks are `source: GIT` and pushing to `main` is
+the deploy step), here the job tasks are `source: WORKSPACE`, so **Databricks runs
+the workspace copy**. So:
 
 - `git push` changes nothing in Databricks.
 - Run `python scripts/databricks_sync.py diff` **before** editing either side —
   someone may have edited a notebook in the Databricks UI since the last pull.
-- `python scripts/databricks_sync.py push` is the deploy step.
+- `databricks_sync.py push` deploys notebooks; `deploy_job.py` deploys the DAG.
+
+`source: GIT` is not an option here without code changes:
+`3_Extract_Tables` and `3b Extract Other Makers` hardcode
+`sys.path.insert(0, '/Workspace/Users/tuckeyhue@gmail.com/Market Research/1. Data ETL/2. VAMA')`
+to import `vama_parser`, which a Git checkout path would break.
+
+## Job ordering has two constraints that look arbitrary
+
+`hyundai_refill_prose` after `hyundai_extract`, and
+`vama_extract_other_makers` after `vama_extract`. Both matter — reversing either
+silently drops data rather than failing. `docs/monthly_workflow.md` explains why.
 
 ## `diff` has one expected difference
 
@@ -20,6 +31,20 @@ and there are no jobs. So:
 someone pushes. That is the stale duplicate reconciliation described in
 `docs/unified_notebook_duplicate.md` — not drift you introduced. Every other
 difference is real.
+
+## The raw source tables are the only copy — never let a failure overwrite them
+
+`hyundai_raw_sources.extracted_text` is the sole copy of each Hyundai source page,
+and `03`/`05` both re-derive from it. A `MERGE ... WHEN MATCHED THEN UPDATE SET *`
+fed by a failed fetch nulls it and the month becomes unrecoverable — that is
+exactly how 2024-12 and 2025-10 were lost on 2026-07-30. Any write into a raw
+source table must be conditional on the fetch having succeeded.
+
+The same shape — delete a range, then conditionally re-insert — is the other half
+of that failure. If an insert can produce nothing, the delete must be scoped to
+what the insert actually produced. This bug existed independently in
+`3b Extract Other Makers` and `05_hyundai_refill_prose_missing_months`; both are
+fixed, but assume it in anything new.
 
 ## Do not "fix" the failing months
 
@@ -52,10 +77,23 @@ banking FX work, unrelated to automobiles. It is in `EXCLUDE` in
 
 ## Open work
 
-- No monthly Workflow exists. Creating one is the main missing piece; name it with
-  a prefix `scripts/export_jobs.py` matches so the DAG gets version-controlled.
-- All sources stop at 2026-04; 2026-05 and 2026-06 need a run.
 - `notebooks/vama/HANDOFF_RowMisalignment_Investigation_2026-05-26.md` is an
-  unresolved extraction-accuracy investigation.
+  unresolved extraction-accuracy investigation. `sales_by_other_makers.maker`
+  holding ~24 numeric junk values (`'0'`, `'178'`, `'489'`) is probably the same
+  root cause.
 - 21 VAMA documents never downloaded and 1 failed extraction, out of 722
   discovered.
+- The Gemini fallback excludes `parsing_method='llm'` rows from validation, so the
+  2,390 rows in that state are never re-checked.
+- `05_hyundai_refill_prose_missing_months` has a hardcoded `TARGET_MONTHS` list; a
+  new prose-format month needs a code change to be picked up. Two of its six months
+  (2024-12, 2025-10) can no longer be derived — the source articles are gone from
+  the site — so they will report as skipped on every run. That is correct
+  behaviour now, not a failure.
+- **The Gemini API key in the workspace env folder is expired.** Every VinFast
+  call returns `400 API_KEY_INVALID`. `15_vinfast_...` now raises when no query in
+  the window succeeds, so `vinfast_extract` will fail the job until the key is
+  rotated. That is deliberate — it previously reported SUCCESS while ingesting
+  nothing. The same key backs the VAMA Gemini fallback in `vama_parser`.
+- Hyundai `2026-05` has no source candidate at all (discovery found none), so that
+  month is absent for a different reason than the two lost ones.

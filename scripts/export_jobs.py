@@ -1,15 +1,16 @@
 #!/usr/bin/env python
-"""Export the automobile Databricks job definitions to jobs/*.json.
+"""Export the live automobile Databricks job definitions to jobs/exported/*.json.
 
     python scripts/export_jobs.py
 
-Keeps the workflow DAGs in version control alongside the notebooks, so a new
-workspace can be reconstructed. Run IDs, timestamps and other per-run state are
-stripped - only the settings are kept.
+This reads Databricks and writes what is actually deployed. It writes into
+`jobs/exported/`, deliberately NOT over `jobs/*.json` - those are the
+hand-maintained source of truth that `deploy_job.py` deploys, and the API returns
+them peppered with server-side defaults and reordered keys. Use this to see drift
+(diff the two) or to recover a definition someone changed in the UI, then fold the
+change into `jobs/*.json` by hand.
 
-As of 2026-07-30 this exports nothing: the automobile pipeline has no Databricks
-Workflows at all, every notebook is run by hand. Once monthly jobs are created,
-name them with the prefix below and re-run this.
+Run IDs, timestamps and other per-run state are stripped - only settings are kept.
 """
 import json
 import os
@@ -19,7 +20,7 @@ import sys
 from databricks.sdk import WorkspaceClient
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-JOBS_DIR = os.path.join(REPO_ROOT, "jobs")
+JOBS_DIR = os.path.join(REPO_ROOT, "jobs", "exported")
 
 # Match anything whose name starts with one of these (case-insensitive).
 JOB_NAME_PREFIXES = ("etl data automobile", "automobile", "vama", "hyundai", "vinfast")
@@ -48,8 +49,7 @@ def main():
 
     print(f"\n{found} job definition(s) exported to {JOBS_DIR}")
     if not found:
-        print(f"  (nothing matched {JOB_NAME_PREFIXES} - expected until the monthly "
-              "Workflows are created; check you are on the right workspace)")
+        print(f"  (nothing matched {JOB_NAME_PREFIXES} - check you are on the right workspace)")
 
 
 if __name__ == "__main__":

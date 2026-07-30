@@ -1,0 +1,285 @@
+{
+  "name": "etl data automobile",
+  "format": "MULTI_TASK",
+  "max_concurrent_runs": 1,
+  "timeout_seconds": 0,
+  "performance_target": "STANDARD",
+  "queue": {
+    "enabled": true
+  },
+  "schedule": {
+    "quartz_cron_expression": "0 0 8 15 * ?",
+    "timezone_id": "Asia/Ho_Chi_Minh",
+    "pause_status": "UNPAUSED"
+  },
+  "email_notifications": {
+    "on_failure": [
+      "garethhoang@gmail.com"
+    ],
+    "no_alert_for_skipped_runs": false
+  },
+  "notification_settings": {
+    "no_alert_for_skipped_runs": true,
+    "no_alert_for_canceled_runs": true
+  },
+  "environments": [
+    {
+      "environment_key": "Default",
+      "spec": {
+        "environment_version": "5"
+      }
+    }
+  ],
+  "tags": {
+    "project": "automobile-etl",
+    "domain": "vietnam_auto_sales"
+  },
+  "tasks": [
+    {
+      "task_key": "vama_crawl",
+      "description": "Discover and download new VAMA sales-report PDFs.",
+      "environment_key": "Default",
+      "timeout_seconds": 3600,
+      "max_retries": 2,
+      "min_retry_interval_millis": 300000,
+      "notebook_task": {
+        "notebook_path": "/Workspace/Users/tuckeyhue@gmail.com/Market Research/1. Data ETL/2. VAMA/1_Crawl_Download_Documents",
+        "source": "WORKSPACE"
+      }
+    },
+    {
+      "task_key": "vama_parse",
+      "description": "ai_parse_document() over newly downloaded PDFs.",
+      "environment_key": "Default",
+      "timeout_seconds": 7200,
+      "max_retries": 1,
+      "min_retry_interval_millis": 300000,
+      "depends_on": [
+        {
+          "task_key": "vama_crawl"
+        }
+      ],
+      "notebook_task": {
+        "notebook_path": "/Workspace/Users/tuckeyhue@gmail.com/Market Research/1. Data ETL/2. VAMA/2_Parse_Documents",
+        "source": "WORKSPACE"
+      }
+    },
+    {
+      "task_key": "vama_extract",
+      "description": "Mainstream VAMA members -> extracted_tables_long, sales_by_model_region. Incremental; set reextract_all=true to rebuild history.",
+      "environment_key": "Default",
+      "timeout_seconds": 7200,
+      "depends_on": [
+        {
+          "task_key": "vama_parse"
+        }
+      ],
+      "notebook_task": {
+        "notebook_path": "/Workspace/Users/tuckeyhue@gmail.com/Market Research/1. Data ETL/2. VAMA/3_Extract_Tables",
+        "source": "WORKSPACE",
+        "base_parameters": {
+          "reextract_all": "false",
+          "only_months": ""
+        }
+      }
+    },
+    {
+      "task_key": "vama_extract_other_makers",
+      "description": "BMW, Lexus, Mercedes-Benz Vietnam -> sales_by_other_makers. Must follow vama_extract, which marks these documents extracted.",
+      "environment_key": "Default",
+      "timeout_seconds": 3600,
+      "depends_on": [
+        {
+          "task_key": "vama_extract"
+        }
+      ],
+      "notebook_task": {
+        "notebook_path": "/Workspace/Users/tuckeyhue@gmail.com/Market Research/1. Data ETL/2. VAMA/3b Extract Other Makers",
+        "source": "WORKSPACE",
+        "base_parameters": {
+          "reextract_all": "false",
+          "only_months": ""
+        }
+      }
+    },
+    {
+      "task_key": "vama_curated_views",
+      "description": "UNION ALL of the two VAMA sales tables -> curated_vama_sales_unified.",
+      "environment_key": "Default",
+      "timeout_seconds": 1800,
+      "depends_on": [
+        {
+          "task_key": "vama_extract_other_makers"
+        }
+      ],
+      "notebook_task": {
+        "notebook_path": "/Workspace/Users/tuckeyhue@gmail.com/Market Research/1. Data ETL/2. VAMA/VAMA Curated Views",
+        "source": "WORKSPACE"
+      }
+    },
+    {
+      "task_key": "hv_schema",
+      "description": "Idempotent DDL for the market_data.hyundai_vinfast schema.",
+      "environment_key": "Default",
+      "timeout_seconds": 1800,
+      "notebook_task": {
+        "notebook_path": "/Workspace/Users/tuckeyhue@gmail.com/Market Research/1. Data ETL/4. Hyundai VinFast Sales/00_create_schema_and_common_helpers",
+        "source": "WORKSPACE"
+      }
+    },
+    {
+      "task_key": "hyundai_discover",
+      "description": "Sitemap plus bounded URL probes for TC Group Hyundai monthly pages.",
+      "environment_key": "Default",
+      "timeout_seconds": 3600,
+      "max_retries": 2,
+      "min_retry_interval_millis": 300000,
+      "depends_on": [
+        {
+          "task_key": "hv_schema"
+        }
+      ],
+      "notebook_task": {
+        "notebook_path": "/Workspace/Users/tuckeyhue@gmail.com/Market Research/1. Data ETL/4. Hyundai VinFast Sales/01_hyundai_discover_sources",
+        "source": "WORKSPACE"
+      }
+    },
+    {
+      "task_key": "hyundai_fetch",
+      "description": "Fetch the selected Hyundai source pages -> hyundai_raw_sources.",
+      "environment_key": "Default",
+      "timeout_seconds": 3600,
+      "max_retries": 2,
+      "min_retry_interval_millis": 300000,
+      "depends_on": [
+        {
+          "task_key": "hyundai_discover"
+        }
+      ],
+      "notebook_task": {
+        "notebook_path": "/Workspace/Users/tuckeyhue@gmail.com/Market Research/1. Data ETL/4. Hyundai VinFast Sales/02_hyundai_fetch_sources",
+        "source": "WORKSPACE"
+      }
+    },
+    {
+      "task_key": "hyundai_extract",
+      "description": "Deterministic model-level extraction. Delete-by-source_id then insert, so it is idempotent.",
+      "environment_key": "Default",
+      "timeout_seconds": 3600,
+      "depends_on": [
+        {
+          "task_key": "hyundai_fetch"
+        }
+      ],
+      "notebook_task": {
+        "notebook_path": "/Workspace/Users/tuckeyhue@gmail.com/Market Research/1. Data ETL/4. Hyundai VinFast Sales/03_hyundai_extract_sales",
+        "source": "WORKSPACE"
+      }
+    },
+    {
+      "task_key": "hyundai_validate",
+      "description": "One validation row per month; 'pass' only when model rows reconcile exactly to the official total.",
+      "environment_key": "Default",
+      "timeout_seconds": 1800,
+      "depends_on": [
+        {
+          "task_key": "hyundai_extract"
+        }
+      ],
+      "notebook_task": {
+        "notebook_path": "/Workspace/Users/tuckeyhue@gmail.com/Market Research/1. Data ETL/4. Hyundai VinFast Sales/04_hyundai_validate",
+        "source": "WORKSPACE"
+      }
+    },
+    {
+      "task_key": "hyundai_refill_prose",
+      "description": "Restores the 6 prose-format months that hyundai_extract cannot parse and overwrites on every run. Must follow hyundai_extract.",
+      "environment_key": "Default",
+      "timeout_seconds": 1800,
+      "depends_on": [
+        {
+          "task_key": "hyundai_validate"
+        }
+      ],
+      "notebook_task": {
+        "notebook_path": "/Workspace/Users/tuckeyhue@gmail.com/Market Research/1. Data ETL/4. Hyundai VinFast Sales/05_hyundai_refill_prose_missing_months",
+        "source": "WORKSPACE"
+      }
+    },
+    {
+      "task_key": "hyundai_curated_view",
+      "description": "-> curated_hyundai_sales.",
+      "environment_key": "Default",
+      "timeout_seconds": 1800,
+      "depends_on": [
+        {
+          "task_key": "hyundai_refill_prose"
+        }
+      ],
+      "notebook_task": {
+        "notebook_path": "/Workspace/Users/tuckeyhue@gmail.com/Market Research/1. Data ETL/4. Hyundai VinFast Sales/Curated Hyundai Sales View",
+        "source": "WORKSPACE"
+      }
+    },
+    {
+      "task_key": "vinfast_extract",
+      "description": "VinFast via Gemini + Google Search grounding. Rolling window: the last lookback_months complete months.",
+      "environment_key": "Default",
+      "timeout_seconds": 7200,
+      "max_retries": 1,
+      "min_retry_interval_millis": 600000,
+      "depends_on": [
+        {
+          "task_key": "hv_schema"
+        }
+      ],
+      "notebook_task": {
+        "notebook_path": "/Workspace/Users/tuckeyhue@gmail.com/Market Research/1. Data ETL/4. Hyundai VinFast Sales/15_vinfast_ai_search_assisted_extract",
+        "source": "WORKSPACE",
+        "base_parameters": {
+          "target_start": "",
+          "target_end": "",
+          "lookback_months": "3",
+          "max_months": "0",
+          "replace_existing": "true"
+        }
+      }
+    },
+    {
+      "task_key": "vinfast_curated_view",
+      "description": "Model-name cleaning -> curated_vinfast_sales.",
+      "environment_key": "Default",
+      "timeout_seconds": 1800,
+      "depends_on": [
+        {
+          "task_key": "vinfast_extract"
+        }
+      ],
+      "notebook_task": {
+        "notebook_path": "/Workspace/Users/tuckeyhue@gmail.com/Market Research/1. Data ETL/4. Hyundai VinFast Sales/VinFast Sales Data Cleaning",
+        "source": "WORKSPACE"
+      }
+    },
+    {
+      "task_key": "build_unified",
+      "description": "VAMA + Hyundai + VinFast -> market_data.automobile.curated_vietnam_auto_sales_unified and auto_sales_source_quality.",
+      "environment_key": "Default",
+      "timeout_seconds": 1800,
+      "depends_on": [
+        {
+          "task_key": "vama_curated_views"
+        },
+        {
+          "task_key": "hyundai_curated_view"
+        },
+        {
+          "task_key": "vinfast_curated_view"
+        }
+      ],
+      "notebook_task": {
+        "notebook_path": "/Workspace/Users/tuckeyhue@gmail.com/Market Research/1. Data ETL/5. Automobile/90_build_automobile_unified_sales",
+        "source": "WORKSPACE"
+      }
+    }
+  ]
+}
