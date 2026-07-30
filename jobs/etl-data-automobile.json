@@ -258,7 +258,8 @@
       "notebook_task": {
         "notebook_path": "/Workspace/Users/tuckeyhue@gmail.com/Market Research/1. Data ETL/4. Hyundai VinFast Sales/VinFast Sales Data Cleaning",
         "source": "WORKSPACE"
-      }
+      },
+      "run_if": "ALL_DONE"
     },
     {
       "task_key": "build_unified",

@@ -55,6 +55,22 @@ schema DDL, so they run in parallel.
 | `vinfast_extract` | `target_start` / `target_end` | `""` | set both to override the rolling window for a backfill |
 | `vinfast_extract` | `replace_existing` | `true` | `false` keeps existing rows for months in the window |
 
+## One dead branch must not block the gold rebuild
+
+`vinfast_curated_view` is **`run_if: ALL_DONE`** — it runs whether or not
+`vinfast_extract` succeeded. Everything else stays `ALL_SUCCESS`.
+
+Without this, a single failing task blocks far more than itself: `vinfast_extract`
+fails → `vinfast_curated_view` is skipped → `build_unified` is skipped, and the gold
+view never picks up that month's *VAMA and Hyundai* rows either. One dead third-party
+API silently freezes the whole warehouse.
+
+It is safe because the view is a plain
+`CREATE OR REPLACE VIEW ... FROM vinfast_sales_by_model` over the persisted table,
+and `15_...` leaves existing rows untouched when Gemini fails — so the view rebuilds
+over the last known-good VinFast data rather than over nothing. The run still ends
+FAILED and still emails, so the staleness is not hidden.
+
 Retries are set only where a failure is plausibly transient — the crawl, the
 Hyundai discovery and fetch (2 retries, 5 min apart) and the VinFast Gemini step
 (1 retry, 10 min apart). The deterministic extract and view steps have none, so a
