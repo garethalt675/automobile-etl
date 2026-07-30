@@ -115,13 +115,28 @@ default context reproduces the error, the new context returns HTTP 200.
 
 ## Data lost on 2026-07-30, and why it cannot be recovered
 
-Hyundai went from 447 to 435 rows across the first job run. `2026-06` was gained
-(+12) and **`2024-12` and `2025-10` were lost** (-24).
+Hyundai net went from **447 to 435** rows: `2026-06` gained (+12), **`2024-12` and
+`2025-10` permanently lost** (-24).
 
 The chain: bug 5 made those two fetches fail → bug 4 wrote the failure over their
 stored `extracted_text` → the old unconditional delete in
 `05_hyundai_refill_prose_missing_months` removed their rows → the re-derive had no
 text to work from → nothing was written back.
+
+It then fired a second time, and that part is worth knowing about. Fixing bug 5
+made those two pages fetch successfully again, which turned their stored text from
+`NULL` into a generic shell page. `regexp_extract` returns `''` (not `NULL`) for
+text that matches nothing, and `CAST('' AS INT)` raises `CAST_INVALID_INPUT` — so
+on the second run the old notebook executed its unconditional `DELETE` and *then*
+threw, taking the four still-good prose months (2024-09/10/11, 2025-01, 45 rows)
+down with it and leaving nothing behind. Those four were recoverable: their source
+pages still serve the prose, so a one-off run of the fixed notebook rebuilt them
+(390 → 435). The casts are now wrapped in `NULLIF(..., '')`.
+
+The lesson is the ordering, not the cast: **a notebook that deletes before it knows
+the replacement rows are valid destroys data every time it fails.** Pushing the fix
+mid-run did not help either — the task's retry had already been scheduled and ran
+the old code 64 seconds after the first failure.
 
 Neither recovery route is open:
 
@@ -134,8 +149,26 @@ Neither recovery route is open:
   four surviving prose months (2024-09/10/11, 2025-01) return byte-identical text
   to what is stored and still match, which is how the difference was confirmed.
 
-So the loss is real and permanent. The fixes stop it happening again — that is all
-they can do.
+So the loss of those two months is real and permanent. The fixes stop it happening
+again — that is all they can do.
+
+## Verified state after 2026-07-30
+
+| Table / view | Rows | Through |
+| --- | --- | --- |
+| `vama.sales_by_model_region` | 12,802 | 2026-05 |
+| `vama.sales_by_other_makers` | 506 | 2026-06 |
+| `hyundai_vinfast.hyundai_sales_by_model` | 435 | 2026-06 |
+| `hyundai_vinfast.vinfast_sales_by_model` | 136 | 2026-04 |
+| `automobile.curated_vietnam_auto_sales_unified` | 13,879 | 2026-06 |
+
+The incremental extract was verified against a pre-change snapshot: no month lost
+rows, `2026-05` added (+88), and `parsing_method='llm'` held at exactly 2,390 —
+i.e. Gemini output is no longer re-bought every run.
+
+VinFast still stops at 2026-04 because the API key is dead, not because of the
+window logic. The rolling window provably targeted 2026-04..2026-06 (all three
+months appear in `vinfast_ai_search_queries`).
 
 ## Not in the job
 
