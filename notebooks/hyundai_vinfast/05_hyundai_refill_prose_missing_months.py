@@ -35,6 +35,11 @@ months_sql = ",".join([f"'{m}'" for m in TARGET_MONTHS])
 # extracted_text), so the delete removed them and the insert produced nothing -
 # both months vanished from hyundai_sales_by_model. Because hyundai_extract runs
 # first and re-inserts only what it can parse, nothing else put them back.
+#
+# The monthly-total casts below are wrapped in NULLIF(..., ''): regexp_extract
+# returns '' rather than NULL when a page fetches fine but matches no pattern, and
+# CAST('' AS INT) raises CAST_INVALID_INPUT. That is now the normal state of the
+# 2024-12 and 2025-10 pages, which serve a generic shell.
 spark.sql(f"""
 CREATE OR REPLACE TEMP VIEW hyundai_prose_refill_rows AS
 WITH raw AS (
@@ -42,7 +47,7 @@ WITH raw AS (
          c.report_year,
          to_date(concat(r.report_month,'-01')) AS report_start_date,
          last_day(to_date(concat(r.report_month,'-01'))) AS report_end_date,
-         CAST(regexp_replace(regexp_extract(r.extracted_text, 't.{{0,20}}ng doanh s.{{0,20}} xe Hyundai th.{{0,20}}ng [0-9]{{1,2}} .{{0,20}}t ([0-9]{{1,3}}(?:[.][0-9]{{3}})+|[0-9]+) xe', 1), '[^0-9]', '') AS INT) AS source_total
+         CAST(NULLIF(regexp_replace(regexp_extract(r.extracted_text, 't.{{0,20}}ng doanh s.{{0,20}} xe Hyundai th.{{0,20}}ng [0-9]{{1,2}} .{{0,20}}t ([0-9]{{1,3}}(?:[.][0-9]{{3}})+|[0-9]+) xe', 1), '[^0-9]', ''), '') AS INT) AS source_total
   FROM {FULL_SCHEMA}.hyundai_raw_sources r
   JOIN {FULL_SCHEMA}.hyundai_source_candidates c ON r.source_id=c.source_id
   WHERE r.report_month IN ({months_sql})
@@ -175,15 +180,15 @@ USING (
   SELECT
     c.report_month,
     c.source_id AS selected_source_id,
-    CAST(regexp_replace(regexp_extract(r.extracted_text, 't.{{0,20}}ng doanh s.{{0,20}} xe Hyundai th.{{0,20}}ng [0-9]{{1,2}} .{{0,20}}t ([0-9]{{1,3}}(?:[.][0-9]{{3}})+|[0-9]+) xe', 1), '[^0-9]', '') AS INT) AS source_total,
+    CAST(NULLIF(regexp_replace(regexp_extract(r.extracted_text, 't.{{0,20}}ng doanh s.{{0,20}} xe Hyundai th.{{0,20}}ng [0-9]{{1,2}} .{{0,20}}t ([0-9]{{1,3}}(?:[.][0-9]{{3}})+|[0-9]+) xe', 1), '[^0-9]', ''), '') AS INT) AS source_total,
     CAST(SUM(h.monthly_total) AS INT) AS sum_model_monthly_total,
     CAST(NULL AS INT) AS source_ytd_total,
     CAST(NULL AS INT) AS sum_model_ytd_total,
     CAST(NULL AS INT) AS previous_ytd_total,
     CAST(NULL AS INT) AS derived_current_from_ytd,
-    CASE WHEN CAST(regexp_replace(regexp_extract(r.extracted_text, 't.{{0,20}}ng doanh s.{{0,20}} xe Hyundai th.{{0,20}}ng [0-9]{{1,2}} .{{0,20}}t ([0-9]{{1,3}}(?:[.][0-9]{{3}})+|[0-9]+) xe', 1), '[^0-9]', '') AS INT) = CAST(SUM(h.monthly_total) AS INT)
+    CASE WHEN CAST(NULLIF(regexp_replace(regexp_extract(r.extracted_text, 't.{{0,20}}ng doanh s.{{0,20}} xe Hyundai th.{{0,20}}ng [0-9]{{1,2}} .{{0,20}}t ([0-9]{{1,3}}(?:[.][0-9]{{3}})+|[0-9]+) xe', 1), '[^0-9]', ''), '') AS INT) = CAST(SUM(h.monthly_total) AS INT)
          THEN 'pass' ELSE 'fail' END AS validation_status,
-    CASE WHEN CAST(regexp_replace(regexp_extract(r.extracted_text, 't.{{0,20}}ng doanh s.{{0,20}} xe Hyundai th.{{0,20}}ng [0-9]{{1,2}} .{{0,20}}t ([0-9]{{1,3}}(?:[.][0-9]{{3}})+|[0-9]+) xe', 1), '[^0-9]', '') AS INT) = CAST(SUM(h.monthly_total) AS INT)
+    CASE WHEN CAST(NULLIF(regexp_replace(regexp_extract(r.extracted_text, 't.{{0,20}}ng doanh s.{{0,20}} xe Hyundai th.{{0,20}}ng [0-9]{{1,2}} .{{0,20}}t ([0-9]{{1,3}}(?:[.][0-9]{{3}})+|[0-9]+) xe', 1), '[^0-9]', ''), '') AS INT) = CAST(SUM(h.monthly_total) AS INT)
          THEN 'Monthly model rows reconcile exactly to official TC Group monthly total; YTD unavailable in prose page, accepted as monthly-only refill.'
          ELSE 'Prose refill monthly rows do not reconcile to official source total.' END AS validation_message,
     current_timestamp() AS checked_at
