@@ -135,8 +135,14 @@ pages still serve the prose, so a one-off run of the fixed notebook rebuilt them
 
 The lesson is the ordering, not the cast: **a notebook that deletes before it knows
 the replacement rows are valid destroys data every time it fails.** Pushing the fix
-mid-run did not help either — the task's retry had already been scheduled and ran
-the old code 64 seconds after the first failure.
+mid-run did not help either — the retry had already been scheduled and ran the old
+code 64 seconds after the first failure.
+
+And the retry itself is worth noting: `hyundai_refill_prose` has **`max_retries`
+unset**, i.e. no configured retries, yet it ran twice. That run terminated in
+`INTERNAL_ERROR`, which Databricks retries on its own. So **you cannot use retry
+configuration to stop a destructive task from executing twice** — the task has to
+be safe to fail. Setting `max_retries: 0` would not have helped.
 
 Neither recovery route is open:
 

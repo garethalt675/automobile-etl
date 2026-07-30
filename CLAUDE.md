@@ -46,6 +46,11 @@ what the insert actually produced. This bug existed independently in
 `3b Extract Other Makers` and `05_hyundai_refill_prose_missing_months`; both are
 fixed, but assume it in anything new.
 
+Do not reach for `max_retries: 0` to contain a destructive task. On 2026-07-30
+`hyundai_refill_prose` had no configured retries and still ran twice, because the
+run ended in `INTERNAL_ERROR` and Databricks retries that itself. The task has to be
+safe to fail; retry settings are not a control here.
+
 ## Do not "fix" the failing months
 
 `hyundai_monthly_validation` has 6 `fail` rows and `vinfast_monthly_validation`
