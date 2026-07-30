@@ -1,0 +1,34 @@
+# Credentials - never commit these
+.databrickscfg
+dbx config.txt
+*.pem
+*.key
+.env
+.env.*
+!.env.example
+secrets.json
+# Holds a live dapi... token inside a Bash permission rule - non-obvious
+.claude/settings.local.json
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Downloaded source PDFs and scratch data (these live in Unity Catalog volumes)
+data/
+*.pdf
+*.xlsx
+*.csv
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini

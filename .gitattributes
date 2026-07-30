@@ -1,0 +1,12 @@
+# scripts/databricks_sync.py uploads notebook sources to Databricks
+# byte-for-byte and compares them byte-for-byte, so git must not rewrite line
+# endings in either direction. Three notebooks in the workspace really do use
+# CRLF (00_create_schema_and_common_helpers, 00_specs_hyundai_vinfast_sales,
+# 03_hyundai_extract_sales); with `eol=lf` a checkout would silently convert them
+# and `diff` would report phantom drift on every one.
+* -text
+
+*.png binary
+*.jpg binary
+*.pdf binary
+*.xlsx binary
