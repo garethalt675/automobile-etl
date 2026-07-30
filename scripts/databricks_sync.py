@@ -116,13 +116,29 @@ def repo_files():
                 yield rel.replace("\\", "/"), full
 
 
-def ws_path_for(rel):
-    """Map a repo-relative path back to its workspace path."""
+def is_package_module(local_path):
+    """True if this .py sits in a Python package, i.e. it is a module, not a notebook.
+
+    `vama_parser/` is imported by the VAMA notebooks, so its files live in the
+    workspace as FILEs and keep their .py extension. Notebooks lose it. Guessing
+    from the extension alone makes a module look like a notebook, and pushing it
+    as one fails with ResourceAlreadyExists.
+    """
+    return os.path.exists(os.path.join(os.path.dirname(local_path), "__init__.py"))
+
+
+def ws_path_for(rel, is_notebook=None):
+    """Map a repo-relative path back to its workspace path.
+
+    Notebooks are stored without their extension; plain files keep it.
+    """
     sub, _, tail = rel.partition("/")
     if sub not in FOLDERS:
         raise ValueError(f"{rel!r} is not under one of {sorted(FOLDERS)}")
     stem, ext = os.path.splitext(tail)
-    leaf = stem if ext.lower() in EXT_TO_LANG else tail
+    if is_notebook is None:
+        is_notebook = ext.lower() in EXT_TO_LANG
+    leaf = stem if is_notebook else tail
     return f"{WS_ROOT}/{FOLDERS[sub]}/{leaf}"
 
 
@@ -151,19 +167,24 @@ def cmd_pull(w, args):
 
 
 def cmd_push(w, args):
-    remote = {rel: ws for rel, ws, _ in workspace_files(w)}
+    remote = {rel: (ws, is_nb) for rel, ws, is_nb in workspace_files(w)}
     changed = 0
     for rel, local in repo_files():
         ext = os.path.splitext(rel)[1].lower()
-        is_notebook = ext in EXT_TO_LANG
         data = open(local, "rb").read().replace(BOM, b"")
-        if rel in remote and fetch(w, remote[rel]) == data:
-            continue
+        if rel in remote:
+            # The workspace already knows whether this is a notebook or a file.
+            # Trust it over the extension -- a package module is a .py too.
+            ws_path, is_notebook = remote[rel]
+            if fetch(w, ws_path) == data:
+                continue
+        else:
+            is_notebook = ext in EXT_TO_LANG and not is_package_module(local)
+            ws_path = ws_path_for(rel, is_notebook)
         if args.dry_run:
             print(f"  would upload  {rel}")
             changed += 1
             continue
-        ws_path = ws_path_for(rel)
         if is_notebook:
             w.workspace.import_(
                 path=ws_path, format=ImportFormat.SOURCE,
@@ -171,7 +192,11 @@ def cmd_push(w, args):
                 content=base64.b64encode(data).decode("ascii"), overwrite=True,
             )
         else:
-            w.workspace.upload(path=ws_path, content=data, overwrite=True)
+            # RAW, not the default: upload() otherwise infers NOTEBOOK from the
+            # .py extension and fails with a type mismatch against the real FILE.
+            w.workspace.upload(
+                path=ws_path, content=data, overwrite=True, format=ImportFormat.RAW
+            )
         print(f"  uploaded  {rel}")
         changed += 1
     print(f"\n{changed} file(s) {'would upload' if args.dry_run else 'uploaded'}")
