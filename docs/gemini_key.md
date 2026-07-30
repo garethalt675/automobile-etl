@@ -53,26 +53,20 @@ This is the one thing code cannot fix.
 | Consumer | Uses grounding? | Status |
 | --- | --- | --- |
 | `vama_parser.GeminiParser` (VAMA fallback) | no | **working** — restored by the secret fix |
-| `15_vinfast_ai_search_assisted_extract` | yes, it *is* the mechanism | **blocked** until grounding quota exists |
+| `17_vinfast_extract_from_sources` | no | **working** — grounding designed out |
+| `15_vinfast_ai_search_assisted_extract` | yes, it *is* the mechanism | **retired**, out of the job |
 
-VinFast extraction is search-grounded by design: it asks Gemini to find and cite a
-source for each month, and rejects ungrounded numbers. Removing grounding would not
-degrade it, it would turn it into a model inventing sales figures. So it stays
-blocked rather than being "fixed".
+**Nothing in the pipeline needs Google Search grounding any more.** VinFast used to,
+and the rewrite in `docs/vinfast_crawl.md` removed the need: the month now comes from
+a URL we choose, and Gemini only reformats text we already fetched. Enabling billing
+is therefore optional — it would only bring notebook 15 back to life, and notebook 15
+is the one that mislabelled data.
 
-## To unblock VinFast
-
-Enable billing on the Google Cloud project behind
-`news-signal/gemini-api-key` (Google AI Studio → the key's project → set up
-billing), which grants Google Search grounding quota. Then re-run `vinfast_extract`
-alone; nothing else needs to change.
-
-To check whether it is unblocked without running the job, a grounded call is the
-whole test — a 200 means go, a 429 means still no quota.
+If you do want to check whether grounding is available, a single grounded call is the
+whole test: 200 means go, 429 means still no quota.
 
 ## Failure mode is contained
 
-`vinfast_extract` raises when no query in the window succeeds, so the failure is
-loud rather than a green task ingesting nothing. `vinfast_curated_view` is
-`run_if: ALL_DONE`, so a dead Gemini key no longer blocks the gold rebuild — see
-`docs/monthly_workflow.md`.
+Both `16_` and `17_` raise when every month fails, so the failure is loud rather than
+a green task ingesting nothing. `vinfast_curated_view` is `run_if: ALL_DONE`, so a
+dead Gemini key no longer blocks the gold rebuild — see `docs/monthly_workflow.md`.

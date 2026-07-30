@@ -222,28 +222,42 @@
       }
     },
     {
-      "task_key": "vinfast_extract",
-      "description": "VinFast via Gemini + Google Search grounding. Rolling window: the last lookback_months complete months.",
       "environment_key": "Default",
-      "timeout_seconds": 7200,
-      "max_retries": 1,
-      "min_retry_interval_millis": 600000,
+      "task_key": "vinfast_discover_fetch",
       "depends_on": [
         {
           "task_key": "hv_schema"
         }
       ],
       "notebook_task": {
-        "notebook_path": "/Workspace/Users/tuckeyhue@gmail.com/Market Research/1. Data ETL/4. Hyundai VinFast Sales/15_vinfast_ai_search_assisted_extract",
+        "notebook_path": "/Workspace/Users/tuckeyhue@gmail.com/Market Research/1. Data ETL/4. Hyundai VinFast Sales/16_vinfast_discover_and_fetch",
         "source": "WORKSPACE",
         "base_parameters": {
-          "target_start": "",
-          "target_end": "",
-          "lookback_months": "3",
-          "max_months": "0",
-          "replace_existing": "true"
+          "refetch_all": "false",
+          "only_months": ""
         }
-      }
+      },
+      "max_retries": 2,
+      "min_retry_interval_millis": 300000
+    },
+    {
+      "environment_key": "Default",
+      "task_key": "vinfast_extract",
+      "depends_on": [
+        {
+          "task_key": "vinfast_discover_fetch"
+        }
+      ],
+      "notebook_task": {
+        "notebook_path": "/Workspace/Users/tuckeyhue@gmail.com/Market Research/1. Data ETL/4. Hyundai VinFast Sales/17_vinfast_extract_from_sources",
+        "source": "WORKSPACE",
+        "base_parameters": {
+          "reextract_all": "false",
+          "only_months": ""
+        }
+      },
+      "max_retries": 1,
+      "min_retry_interval_millis": 600000
     },
     {
       "task_key": "vinfast_curated_view",

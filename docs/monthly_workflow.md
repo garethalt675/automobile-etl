@@ -23,10 +23,17 @@ vama_crawl ─ vama_parse ─ vama_extract ─ vama_extract_other_makers ─ vam
 hv_schema ─┬─ hyundai_discover ─ hyundai_fetch ─ hyundai_extract ─ hyundai_validate ─┐    ├─ build_unified
            │                                     hyundai_refill_prose ─ hyundai_curated_view
            │
-           └─ vinfast_extract ─ vinfast_curated_view ───────────────────────────────────┘
+           └─ vinfast_discover_fetch ─ vinfast_extract ─ vinfast_curated_view ──────────┘
 ```
 
 `build_unified` waits on all three curated layers.
+
+**VinFast is a crawl, not a search.** `vinfast_discover_fetch` (notebook 16) finds
+each month's official release by URL and stores its text; `vinfast_extract`
+(notebook 17) turns that stored text into rows using Gemini *without* search
+grounding. The previous single task asked Gemini to find the source itself, which
+mislabelled two months and needed grounding quota the API key does not have.
+`docs/vinfast_crawl.md` has the detail. Notebook 15 is retired but kept in the repo.
 
 ## Ordering constraints that are not obvious
 
@@ -51,9 +58,10 @@ schema DDL, so they run in parallel.
 | `vama_extract` | `reextract_all` | `false` | `true` rebuilds every parsed document — use after changing extraction logic |
 | `vama_extract` | `only_months` | `""` | e.g. `2026-05,2026-06` to re-do specific months |
 | `vama_extract_other_makers` | same two | same | same |
-| `vinfast_extract` | `lookback_months` | `3` | how many complete months back the rolling window reaches |
-| `vinfast_extract` | `target_start` / `target_end` | `""` | set both to override the rolling window for a backfill |
-| `vinfast_extract` | `replace_existing` | `true` | `false` keeps existing rows for months in the window |
+| `vinfast_discover_fetch` | `refetch_all` | `false` | `true` re-downloads every discovered release |
+| `vinfast_discover_fetch` | `only_months` | `""` | restrict discovery to specific months |
+| `vinfast_extract` | `reextract_all` | `false` | `true` re-extracts every fetched month |
+| `vinfast_extract` | `only_months` | `""` | e.g. `2026-05,2026-06` |
 
 ## One dead branch must not block the gold rebuild
 
@@ -181,16 +189,16 @@ again — that is all they can do.
 | `vama.sales_by_model_region` | 12,802 | 2026-05 |
 | `vama.sales_by_other_makers` | 506 | 2026-06 |
 | `hyundai_vinfast.hyundai_sales_by_model` | 435 | 2026-06 |
-| `hyundai_vinfast.vinfast_sales_by_model` | 136 | 2026-04 |
-| `automobile.curated_vietnam_auto_sales_unified` | 13,879 | 2026-06 |
+| `hyundai_vinfast.vinfast_sales_by_model` | 151 | 2026-06 |
+| `automobile.curated_vietnam_auto_sales_unified` | 13,894 | 2026-06 |
 
 The incremental extract was verified against a pre-change snapshot: no month lost
 rows, `2026-05` added (+88), and `parsing_method='llm'` held at exactly 2,390 —
 i.e. Gemini output is no longer re-bought every run.
 
-VinFast still stops at 2026-04 because the API key is dead, not because of the
-window logic. The rolling window provably targeted 2026-04..2026-06 (all three
-months appear in `vinfast_ai_search_queries`).
+VinFast reached 2026-06 on 2026-07-30 via the crawl rewrite. Ten months were
+re-extracted from official releases; the eight that already had data reproduced
+their totals exactly, and no existing month changed. See `docs/vinfast_crawl.md`.
 
 ## Not in the job
 
