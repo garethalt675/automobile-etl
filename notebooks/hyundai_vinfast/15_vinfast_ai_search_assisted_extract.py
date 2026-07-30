@@ -34,28 +34,52 @@ MODEL = "gemini-2.5-flash"  # Switched from 3.1-flash-lite due to quota
 PROVIDER = "gemini_google_search_grounding_live_databricks"
 RUN_ID = "sprint010_live_gemini_google_search_2024_now"
 CREATED_AT = dt.datetime.utcnow()
-TARGET_START = "2024-01"
-# Run through the last complete calendar month.
+# Default window is a rolling one: the last `lookback_months` complete calendar
+# months, ending with the previous month.
+#
+# The end month used to be pinned to a literal "2024-12" with the rolling
+# expression commented out just above it - fine for the one-off 2024 backfill it
+# was left in, fatal on a schedule. With replace_existing=true it would have
+# deleted and re-Gemini'd 2024-01..2024-12 on every single run and never advanced
+# past 2024-12, which is why VinFast coverage stalled.
+#
+# Explicit target_start / target_end still win, so a backfill is
+#   target_start=2024-01  target_end=2026-06  replace_existing=true
 _today = dt.date.today()
 _prev_month = (_today.replace(day=1) - dt.timedelta(days=1))
-# TARGET_END = f"{_prev_month.year:04d}-{_prev_month.month:02d}"
-TARGET_END = "2024-12"
+DEFAULT_TARGET_END = f"{_prev_month.year:04d}-{_prev_month.month:02d}"
+DEFAULT_LOOKBACK_MONTHS = 3
+
+
+def _shift_month(year_month, months):
+    y, m = (int(p) for p in year_month.split("-"))
+    total = y * 12 + (m - 1) + months
+    return f"{total // 12:04d}-{total % 12 + 1:02d}"
+
 
 try:
-    dbutils.widgets.text("target_start", TARGET_START)
-    dbutils.widgets.text("target_end", TARGET_END)
+    dbutils.widgets.text("target_start", "")
+    dbutils.widgets.text("target_end", "")
+    dbutils.widgets.text("lookback_months", str(DEFAULT_LOOKBACK_MONTHS))
     dbutils.widgets.text("max_months", "0")
     dbutils.widgets.text("replace_existing", "true")
 except Exception:
     pass
 try:
-    TARGET_START = dbutils.widgets.get("target_start") or TARGET_START
-    TARGET_END = dbutils.widgets.get("target_end") or TARGET_END
+    LOOKBACK_MONTHS = int(dbutils.widgets.get("lookback_months") or DEFAULT_LOOKBACK_MONTHS)
+    TARGET_END = dbutils.widgets.get("target_end") or DEFAULT_TARGET_END
+    TARGET_START = dbutils.widgets.get("target_start") or _shift_month(TARGET_END, -(LOOKBACK_MONTHS - 1))
     MAX_MONTHS = int(dbutils.widgets.get("max_months") or "0")
     REPLACE_EXISTING = (dbutils.widgets.get("replace_existing") or "true").lower() == "true"
 except Exception:
+    LOOKBACK_MONTHS = DEFAULT_LOOKBACK_MONTHS
+    TARGET_END = DEFAULT_TARGET_END
+    TARGET_START = _shift_month(TARGET_END, -(DEFAULT_LOOKBACK_MONTHS - 1))
     MAX_MONTHS = 0
     REPLACE_EXISTING = True
+
+print(f"VinFast target window: {TARGET_START} .. {TARGET_END} "
+      f"(lookback_months={LOOKBACK_MONTHS}, replace_existing={REPLACE_EXISTING})")
 
 # COMMAND ----------
 
@@ -629,4 +653,43 @@ SELECT
 """).collect()[0].asDict()
 
 print(json.dumps(metrics, ensure_ascii=False, default=str))
+
+# COMMAND ----------
+
+# DBTITLE 1,Fail Loudly On Total API Failure
+# "Searched every month and found no reliable source" and "the Gemini API rejected
+# every single call" both end with zero sales rows, and the guardrail above turns
+# both into a clean exit. On a schedule that is the difference between a real
+# result and a task that reports SUCCESS forever while ingesting nothing - which is
+# exactly what happened on 2026-07-30, when the key in the workspace env folder had
+# expired and all 12 calls came back 400 API_KEY_INVALID against a green task.
+#
+# So: if no query in the window succeeded, that is infrastructure, not evidence.
+# Raise. Audit rows are already written above, so the failure is diagnosable.
+try:
+    dbutils.widgets.text("fail_on_total_api_failure", "true")
+except Exception:
+    pass
+try:
+    FAIL_ON_TOTAL_API_FAILURE = (
+        dbutils.widgets.get("fail_on_total_api_failure") or "true").lower() == "true"
+except Exception:
+    FAIL_ON_TOTAL_API_FAILURE = True
+
+# Accessed by field name, not position: these are Row(**kwargs) objects and
+# PySpark orders kwarg fields alphabetically, so r[8] is not status.
+attempted = len(query_rows)
+succeeded = sum(1 for r in query_rows if (r["status"] or "").lower() in ("ok", "success"))
+print(f"gemini queries: {succeeded}/{attempted} succeeded")
+
+if FAIL_ON_TOTAL_API_FAILURE and attempted > 0 and succeeded == 0:
+    sample = next((r["error_message"] for r in query_rows if r["error_message"]), "")
+    sample = re.sub(r"AIza[0-9A-Za-z_\-]+", "[REDACTED_KEY]", str(sample))
+    sample = re.sub(r"key=[^&\s\"]+", "key=[REDACTED]", sample)[:300]
+    raise RuntimeError(
+        f"All {attempted} Gemini queries failed for {TARGET_START}..{TARGET_END}; "
+        f"no VinFast data could be ingested. Existing rows were left untouched. "
+        f"Check the GEMINI_API_KEY in the Databricks env folder. First error: {sample}"
+    )
+
 dbutils.notebook.exit(json.dumps(metrics, ensure_ascii=False, default=str))

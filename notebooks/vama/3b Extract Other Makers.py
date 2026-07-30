@@ -16,9 +16,15 @@
 
 # COMMAND ----------
 
-# DBTITLE 1,Clear Existing Data
-# MAGIC %sql
-# MAGIC DELETE FROM market_data.vama.sales_by_other_makers
+# DBTITLE 1,Reload Scope
+# This notebook used to begin with an unconditional
+#     DELETE FROM market_data.vama.sales_by_other_makers
+# which only worked because it was run by hand immediately before a full
+# re-extract. On a schedule it emptied the table: notebook 3 marks every document
+# it touches - BMW/Lexus/MBV included - as extraction_status='success', so the
+# document selection further down matched nothing and the deleted rows were never
+# rewritten. Deletes are now scoped to the documents actually being re-extracted,
+# just before the append.
 
 # COMMAND ----------
 
@@ -309,26 +315,57 @@ def extract_sales_rows(doc, tables):
     
     return sales_rows
 
-# Query documents - filter by title only
+# Query documents - filter by title, then by what this notebook has yet to do.
+#
+# Progress is tracked against sales_by_other_makers itself rather than
+# document_processing_log.extraction_status: that column is owned by notebook 3,
+# which sets 'success' on every document it processes, so keying off it made this
+# selection return zero rows. A document is in scope when it has no rows here yet,
+# or when it has been re-parsed since its rows were written.
+dbutils.widgets.text("reextract_all", "false")
+dbutils.widgets.text("only_months", "")
+
+REEXTRACT_ALL = dbutils.widgets.get("reextract_all").strip().lower() == "true"
+ONLY_MONTHS = [m.strip() for m in dbutils.widgets.get("only_months").split(",") if m.strip()]
+
+filters = [
+    "log.parse_status = 'success'",
+    """(raw.title LIKE '%BMW%'
+         OR raw.title LIKE '%Lexus%'
+         OR raw.title LIKE '%MBV%'
+         OR raw.title LIKE '%Mercedes-Benz%')""",
+]
+if not REEXTRACT_ALL:
+    filters.append("""(
+        done.document_id IS NULL
+        OR raw.parsed_timestamp > done.last_extracted
+    )""")
+if ONLY_MONTHS:
+    months_sql = ", ".join("'" + m.replace("'", "''") + "'" for m in ONLY_MONTHS)
+    filters.append(f"raw.report_month_key IN ({months_sql})")
+
 raw_docs = spark.sql(f"""
-WITH ranked_docs AS (
+WITH already_extracted AS (
+  SELECT document_id, MAX(extracted_timestamp) AS last_extracted
+  FROM {CATALOG}.{SCHEMA}.sales_by_other_makers
+  GROUP BY document_id
+),
+ranked_docs AS (
   SELECT raw.*,
     ROW_NUMBER() OVER (PARTITION BY raw.document_id ORDER BY raw.parsed_timestamp DESC) as rn
   FROM {CATALOG}.{SCHEMA}.parsed_documents_raw raw
   JOIN {CATALOG}.{SCHEMA}.document_processing_log log
     ON raw.document_id = log.document_id
-  WHERE log.parse_status = 'success'
-  AND extraction_status  <> 'success'
-    AND (raw.title LIKE '%BMW%' 
-         OR raw.title LIKE '%Lexus%' 
-         OR raw.title LIKE '%MBV%'
-         OR raw.title LIKE '%Mercedes-Benz%')
+  LEFT JOIN already_extracted done
+    ON raw.document_id = done.document_id
+  WHERE {" AND ".join(filters)}
 )
 SELECT document_id, document_url, title, filename, report_year, report_month, report_month_key, report_type, parsed_json, parsed_timestamp
 FROM ranked_docs
 WHERE rn = 1
 """).collect()
 
+print(f"reextract_all={REEXTRACT_ALL}  only_months={ONLY_MONTHS or '(all)'}")
 print(f"Documents to extract (BMW/Lexus/MBV): {len(raw_docs)}")
 sales_rows = []
 
@@ -396,6 +433,18 @@ if sales_rows:
         ])
         
         sales_df = spark.createDataFrame(valid_rows, schema=sales_schema)
+
+        # The write below is append-mode, so clear this batch's documents first or
+        # a re-extract would double their rows. Scoped to the batch, unlike the
+        # whole-table DELETE this notebook used to open with.
+        batch_doc_ids = sorted({row['document_id'] for row in valid_rows})
+        ids_sql = ", ".join("'" + d.replace("'", "''") + "'" for d in batch_doc_ids)
+        spark.sql(f"""
+        DELETE FROM {CATALOG}.{SCHEMA}.sales_by_other_makers
+        WHERE document_id IN ({ids_sql})
+        """)
+        print(f"Cleared prior rows for {len(batch_doc_ids)} document(s) before append")
+
         sales_df.write.mode('append').saveAsTable(f'{CATALOG}.{SCHEMA}.sales_by_other_makers')
         print(f"✓ Written {len(valid_rows)} rows to {CATALOG}.{SCHEMA}.sales_by_other_makers")
     else:

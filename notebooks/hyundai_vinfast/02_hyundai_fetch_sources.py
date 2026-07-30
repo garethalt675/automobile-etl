@@ -8,6 +8,7 @@ import datetime as dt
 import hashlib
 import html
 import re
+import ssl
 import urllib.error
 import urllib.request
 from pyspark.sql import Row
@@ -16,6 +17,24 @@ from pyspark.sql.types import StructType, StructField, StringType, IntegerType, 
 FULL_SCHEMA = "market_data.hyundai_vinfast"
 FETCH_TIMEOUT_SECONDS = 15
 USER_AGENT = "Mozilla/5.0 OpenClaw data QA; Hyundai VinFast sales ETL"
+
+
+def _ssl_context():
+    """hyundai.thanhcong.vn needs TLS renegotiation that OpenSSL 3.x refuses.
+
+    Some of its pages fail with
+        SSL: UNSAFE_LEGACY_RENEGOTIATION_DISABLED
+    while others on the same host succeed, so this cannot be spotted from a single
+    probe. It cost the 2024-12 and 2025-10 source pages on 2026-07-30. Certificate
+    and hostname verification are left fully on; only the legacy-renegotiation
+    handshake is permitted.
+    """
+    ctx = ssl.create_default_context()
+    ctx.options |= getattr(ssl, "OP_LEGACY_SERVER_CONNECT", 0x4)
+    return ctx
+
+
+SSL_CONTEXT = _ssl_context()
 
 RAW_SCHEMA = StructType([
     StructField("source_id", StringType(), False),
@@ -42,7 +61,7 @@ def fetch(url):
     now = dt.datetime.utcnow()
     try:
         req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-        with urllib.request.urlopen(req, timeout=FETCH_TIMEOUT_SECONDS) as r:
+        with urllib.request.urlopen(req, timeout=FETCH_TIMEOUT_SECONDS, context=SSL_CONTEXT) as r:
             raw_bytes = r.read()
             raw = raw_bytes.decode("utf-8", "ignore")
             text = html_to_text(raw)
@@ -78,11 +97,22 @@ for c in cands:
 if rows:
     df = spark.createDataFrame(rows, schema=RAW_SCHEMA)
     df.createOrReplaceTempView("new_hyundai_raw_sources")
+    # A failed fetch must NOT clobber content we already have. The previous
+    # `WHEN MATCHED THEN UPDATE SET *` overwrote raw_html/extracted_text with NULL
+    # whenever a page that once fetched fine transiently failed, which destroyed
+    # the only copy of the 2024-12 and 2025-10 prose sources on 2026-07-30 and made
+    # those months unrecoverable downstream. Failures now update only the attempt
+    # metadata and leave the last good payload in place.
     spark.sql(f"""
       MERGE INTO {FULL_SCHEMA}.hyundai_raw_sources t
       USING new_hyundai_raw_sources s
       ON t.source_id = s.source_id
-      WHEN MATCHED THEN UPDATE SET *
+      WHEN MATCHED AND s.fetch_status = 'ok' THEN UPDATE SET *
+      WHEN MATCHED AND s.fetch_status <> 'ok' THEN UPDATE SET
+        t.fetch_status = s.fetch_status,
+        t.http_status = s.http_status,
+        t.fetched_at = s.fetched_at,
+        t.error_message = s.error_message
       WHEN NOT MATCHED THEN INSERT *
     """)
 

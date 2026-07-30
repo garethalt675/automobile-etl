@@ -68,11 +68,14 @@ CREATE TABLE IF NOT EXISTS {CATALOG}.{SCHEMA}.extracted_tables_long (
 ) USING DELTA
 """)
 
-# Drop and recreate sales_by_model_region with new schema
-spark.sql(f"DROP TABLE IF EXISTS {CATALOG}.{SCHEMA}.sales_by_model_region")
-
+# sales_by_model_region is created once and then MERGEd into, so a scheduled run
+# never drops it. Dropping it here (the previous behaviour) forced a full
+# re-extract of every parsed document on every run, re-spent Gemini quota on the
+# LLM-fallback documents, and left the table empty for the whole run - and empty
+# for good if the run failed part-way, taking curated_vama_sales_unified with it.
+# Use the reextract_all widget below to rebuild history deliberately.
 spark.sql(f"""
-CREATE TABLE {CATALOG}.{SCHEMA}.sales_by_model_region (
+CREATE TABLE IF NOT EXISTS {CATALOG}.{SCHEMA}.sales_by_model_region (
   document_id STRING NOT NULL,
   document_url STRING,
   filename STRING,
@@ -463,7 +466,34 @@ def extract_sales_rows(doc, tables):
 
 # COMMAND ----------
 
-# DBTITLE 1,Query Successfully Parsed Documents
+# DBTITLE 1,Select Documents Needing Extraction
+# Incremental by default: a document is extracted when it has never been
+# extracted, when the last attempt failed, or when it has been re-parsed since it
+# was last extracted (which is what ADHOC_Reparse_Detail_PDFs produces).
+# Documents already carrying a good extraction are left alone, so their rows -
+# including Gemini-corrected parsing_method='llm' rows - survive untouched.
+#
+# Escape hatches for when the extraction logic itself changes:
+#   reextract_all = true       rebuild every parsed document
+#   only_months = 2026-05,...  restrict to these report_month_key values
+dbutils.widgets.text("reextract_all", "false")
+dbutils.widgets.text("only_months", "")
+
+REEXTRACT_ALL = dbutils.widgets.get("reextract_all").strip().lower() == "true"
+ONLY_MONTHS = [m.strip() for m in dbutils.widgets.get("only_months").split(",") if m.strip()]
+
+filters = ["log.parse_status = 'success'"]
+if not REEXTRACT_ALL:
+    filters.append("""(
+        log.extraction_status IS NULL
+        OR log.extraction_status = 'failed'
+        OR log.extraction_timestamp IS NULL
+        OR raw.parsed_timestamp > log.extraction_timestamp
+    )""")
+if ONLY_MONTHS:
+    months_sql = ", ".join("'" + m.replace("'", "''") + "'" for m in ONLY_MONTHS)
+    filters.append(f"raw.report_month_key IN ({months_sql})")
+
 # Deduplicate parsed documents by selecting latest parse for each document_id
 raw_docs = spark.sql(f"""
 WITH ranked_docs AS (
@@ -472,13 +502,14 @@ WITH ranked_docs AS (
   FROM {CATALOG}.{SCHEMA}.parsed_documents_raw raw
   JOIN {CATALOG}.{SCHEMA}.document_processing_log log
     ON raw.document_id = log.document_id
-  WHERE log.parse_status = 'success'
+  WHERE {" AND ".join(filters)}
 )
 SELECT document_id, document_url, title, filename, report_year, report_month, report_month_key, report_type, parsed_json, parsed_timestamp
 FROM ranked_docs
 WHERE rn = 1
 """).collect()
 
+print(f"reextract_all={REEXTRACT_ALL}  only_months={ONLY_MONTHS or '(all)'}")
 print(f"Documents to extract: {len(raw_docs)}")
 long_rows = []
 sales_rows = []
