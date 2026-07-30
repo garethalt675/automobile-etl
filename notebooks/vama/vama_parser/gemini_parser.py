@@ -21,7 +21,13 @@ from pyspark.sql.types import (
     TimestampType,
 )
 
-from .config import DEFAULT_GEMINI_MODEL, DEFAULT_TIMEOUT, TARGET_COLS
+from .config import (
+    DEFAULT_GEMINI_MODEL,
+    DEFAULT_SECRET_KEY,
+    DEFAULT_SECRET_SCOPE,
+    DEFAULT_TIMEOUT,
+    TARGET_COLS,
+)
 from .utils import (
     extract_json,
     normalize_rows,
@@ -50,6 +56,8 @@ class GeminiParser:
         gemini_model: str = DEFAULT_GEMINI_MODEL,
         env_workspace_path: str = None,
         gemini_api_key: str = None,
+        secret_scope: str = DEFAULT_SECRET_SCOPE,
+        secret_key: str = DEFAULT_SECRET_KEY,
         verbose: bool = True,
     ):
         """Initialize Gemini parser.
@@ -66,8 +74,10 @@ class GeminiParser:
             report_end_date: Report end date (format: YYYY-MM-DD)
             output_table: Target Delta table (catalog.schema.table)
             gemini_model: Gemini model name
-            env_workspace_path: Path to .env file in workspace
-            gemini_api_key: Gemini API key (if not provided, loaded from env file)
+            env_workspace_path: Path to .env file in workspace (legacy fallback)
+            gemini_api_key: Gemini API key (if not provided, loaded from secret)
+            secret_scope: Databricks secret scope holding the key
+            secret_key: Databricks secret key name
             verbose: Enable verbose logging
         """
         self.spark = spark
@@ -82,6 +92,8 @@ class GeminiParser:
         self.output_table = output_table
         self.gemini_model = gemini_model
         self.env_workspace_path = env_workspace_path
+        self.secret_scope = secret_scope
+        self.secret_key = secret_key
         self.verbose = verbose
 
         # Document metadata
@@ -110,10 +122,15 @@ class GeminiParser:
             print(message)
 
     def _load_api_key(self, api_key: Optional[str] = None) -> str:
-        """Load Gemini API key from provided value, env file, or environment variable.
+        """Load Gemini API key from the Databricks secret, an env file, or the process env.
+
+        The Databricks secret is checked first and is the place to rotate the key.
+        The workspace .env. file is only a legacy fallback -- as of 2026-07-30 it
+        still held a dead key, and because it used to be read first, rotating the
+        secret had no effect on this pipeline.
 
         Args:
-            api_key: Optional API key
+            api_key: Optional API key, wins over every lookup
 
         Returns:
             API key string
@@ -124,11 +141,28 @@ class GeminiParser:
         if api_key:
             return api_key
 
-        # Try loading from workspace env file
+        # Databricks secret -- authoritative source, rotate here
+        if self.secret_scope and self.secret_key:
+            try:
+                value = self.dbutils.secrets.get(scope=self.secret_scope, key=self.secret_key)
+                if value and value.strip():
+                    self._log(
+                        f"  Gemini key loaded from secret {self.secret_scope}/{self.secret_key} "
+                        f"(length {len(value.strip())})"
+                    )
+                    return value.strip()
+            except Exception as e:
+                self._log(
+                    f"Warning: secret {self.secret_scope}/{self.secret_key} unavailable "
+                    f"({type(e).__name__}); falling back to env file"
+                )
+
+        # Legacy workspace env file
         if self.env_workspace_path:
             try:
                 env = parse_env(read_workspace_file(self.env_workspace_path, self.dbutils))
                 if "GEMINI_API_KEY" in env:
+                    self._log(f"  Gemini key loaded from legacy env file {self.env_workspace_path}")
                     return env["GEMINI_API_KEY"]
             except Exception as e:
                 self._log(f"Warning: Could not load env file {self.env_workspace_path}: {e}")
@@ -139,6 +173,7 @@ class GeminiParser:
 
         raise ValueError(
             f"GEMINI_API_KEY not found. Provide via api_key parameter, "
+            f"secret ({self.secret_scope}/{self.secret_key}), "
             f"env file ({self.env_workspace_path}), or environment variable."
         )
 
@@ -217,9 +252,15 @@ Rules:
             },
         }
 
-        # Call API
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.gemini_model}:generateContent?key={urllib.parse.quote(self.gemini_api_key)}"
-        resp = requests.post(url, json=payload, timeout=DEFAULT_TIMEOUT)
+        # Call API. The key goes in a header, not the query string, so it cannot
+        # leak through a logged or raised URL.
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.gemini_model}:generateContent"
+        resp = requests.post(
+            url,
+            json=payload,
+            headers={"x-goog-api-key": self.gemini_api_key},
+            timeout=DEFAULT_TIMEOUT,
+        )
 
         if not resp.ok:
             raise RuntimeError(f"Gemini HTTP {resp.status_code}: {resp.text[:1000]}")

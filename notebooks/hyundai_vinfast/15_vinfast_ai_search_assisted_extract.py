@@ -6,7 +6,7 @@
 # MAGIC
 # MAGIC Mechanism:
 # MAGIC - Runs inside Databricks.
-# MAGIC - Reads `GEMINI_API_KEY` from Giang's Databricks env folder without logging it.
+# MAGIC - Reads `GEMINI_API_KEY` from the Databricks secret `news-signal/gemini-api-key` without logging it.
 # MAGIC - Calls Gemini `gemini-3.1-flash-lite` with Google Search grounding.
 # MAGIC - Audits every month/query and every extracted claim.
 # MAGIC - Resolves Google/Vertex/search redirects to canonical publisher URLs.
@@ -30,7 +30,9 @@ from pyspark.sql import Row
 from pyspark.sql.types import *
 
 FULL_SCHEMA = "market_data.hyundai_vinfast"
-MODEL = "gemini-2.5-flash"  # Switched from 3.1-flash-lite due to quota
+# gemini-2.5-flash returns 404 "no longer available to new users" for the rotated
+# key's project, so the 2026-07-30 switch away from 3.1-flash-lite is undone.
+MODEL = "gemini-3.1-flash-lite"
 PROVIDER = "gemini_google_search_grounding_live_databricks"
 RUN_ID = "sprint010_live_gemini_google_search_2024_now"
 CREATED_AT = dt.datetime.utcnow()
@@ -83,11 +85,40 @@ print(f"VinFast target window: {TARGET_START} .. {TARGET_END} "
 
 # COMMAND ----------
 
+# The Databricks secret is the authoritative source and the place to rotate the
+# key. The workspace .env. file is a legacy fallback only: it used to be read
+# first, so when the key was rotated into the secret on 2026-07-24 this notebook
+# kept using the dead .env. copy and every call came back 400 API_KEY_INVALID.
+# Order matters more than the lookup itself. See docs/gemini_key.md.
+try:
+    dbutils.widgets.text("gemini_secret_scope", "news-signal")
+    dbutils.widgets.text("gemini_secret_key", "gemini-api-key")
+except Exception:
+    pass
+
+def _widget(name, default):
+    try:
+        return (dbutils.widgets.get(name) or default).strip()
+    except Exception:
+        return default
+
+GEMINI_SECRET_SCOPE = _widget("gemini_secret_scope", "news-signal")
+GEMINI_SECRET_KEY = _widget("gemini_secret_key", "gemini-api-key")
+
 def load_env_value(key):
-    candidates = [
-        "/Workspace/Users/tuckeyhue@gmail.com/env/.env."
-    ]
-    for path in candidates:
+    """Resolve a credential, preferring the Databricks secret. Never logs the value."""
+    if GEMINI_SECRET_SCOPE and GEMINI_SECRET_KEY:
+        try:
+            value = dbutils.secrets.get(scope=GEMINI_SECRET_SCOPE, key=GEMINI_SECRET_KEY)
+            if value and value.strip():
+                print(f"{key}: loaded from secret {GEMINI_SECRET_SCOPE}/{GEMINI_SECRET_KEY} "
+                      f"(length {len(value.strip())})")
+                return value.strip()
+        except Exception as e:
+            print(f"{key}: secret {GEMINI_SECRET_SCOPE}/{GEMINI_SECRET_KEY} unavailable "
+                  f"({type(e).__name__}); falling back to legacy env file")
+
+    for path in ["/Workspace/Users/tuckeyhue@gmail.com/env/.env."]:
         try:
             if os.path.exists(path):
                 with open(path, encoding="utf-8", errors="ignore") as f:
@@ -97,13 +128,16 @@ def load_env_value(key):
                             continue
                         k, v = line.split("=", 1)
                         if k.strip() == key:
+                            print(f"{key}: loaded from legacy env file {path}")
                             return v.strip().strip('"').strip("'")
         except Exception:
             pass
     # Optional Databricks secret/env fallback; do not log value.
     if os.environ.get(key):
         return os.environ[key]
-    raise RuntimeError(f"Missing {key}; checked Databricks env folder candidates and process env")
+    raise RuntimeError(
+        f"Missing {key}; checked secret {GEMINI_SECRET_SCOPE}/{GEMINI_SECRET_KEY}, "
+        f"the workspace env folder, and process env")
 
 GEMINI_API_KEY = load_env_value("GEMINI_API_KEY")
 
@@ -299,7 +333,10 @@ Required JSON schema:
   "notes": string
 }}
 """.strip()
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:generateContent?key={GEMINI_API_KEY}"
+    # Key travels in a header, not the query string, so it cannot leak through a
+    # logged URL or an error message that echoes one.
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:generateContent"
+    headers = {"x-goog-api-key": GEMINI_API_KEY}
     body = {
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],
         "tools": [{"googleSearch": {}}],  # Fixed: camelCase for REST API
@@ -307,7 +344,7 @@ Required JSON schema:
     }
     last_error = None
     for attempt in range(4):
-        r = requests.post(url, json=body, timeout=90)
+        r = requests.post(url, json=body, headers=headers, timeout=90)
         if r.ok:
             break
         last_error = f"Gemini status {r.status_code}: {r.text[:500]}"
@@ -689,7 +726,9 @@ if FAIL_ON_TOTAL_API_FAILURE and attempted > 0 and succeeded == 0:
     raise RuntimeError(
         f"All {attempted} Gemini queries failed for {TARGET_START}..{TARGET_END}; "
         f"no VinFast data could be ingested. Existing rows were left untouched. "
-        f"Check the GEMINI_API_KEY in the Databricks env folder. First error: {sample}"
+        f"Check secret {GEMINI_SECRET_SCOPE}/{GEMINI_SECRET_KEY}: a 400 means the key "
+        f"is bad, a 429 on every call means the project has no Google Search "
+        f"grounding quota (see docs/gemini_key.md). First error: {sample}"
     )
 
 dbutils.notebook.exit(json.dumps(metrics, ensure_ascii=False, default=str))

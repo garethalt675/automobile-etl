@@ -51,6 +51,16 @@ Do not reach for `max_retries: 0` to contain a destructive task. On 2026-07-30
 run ended in `INTERNAL_ERROR` and Databricks retries that itself. The task has to be
 safe to fail; retry settings are not a control here.
 
+## Credentials come from Databricks secrets, not the `.env.` file
+
+`/Workspace/Users/tuckeyhue@gmail.com/env/.env.` still exists and still holds a
+`GEMINI_API_KEY`, but it is **dead**. The live key is the secret
+`news-signal/gemini-api-key`. Both loaders read the secret first now; the file is
+fallback only. Rotating the file changes nothing, and rotating the secret while a
+loader still preferred the file is exactly the bug that wasted 2026-07-24..30 —
+the key had already been rotated and nothing read it. Log the key's *length*, never
+its value.
+
 ## Do not "fix" the failing months
 
 `hyundai_monthly_validation` has 6 `fail` rows and `vinfast_monthly_validation`
@@ -95,10 +105,14 @@ banking FX work, unrelated to automobiles. It is in `EXCLUDE` in
   (2024-12, 2025-10) can no longer be derived — the source articles are gone from
   the site — so they will report as skipped on every run. That is correct
   behaviour now, not a failure.
-- **The Gemini API key in the workspace env folder is expired.** Every VinFast
-  call returns `400 API_KEY_INVALID`. `15_vinfast_...` now raises when no query in
-  the window succeeds, so `vinfast_extract` will fail the job until the key is
-  rotated. That is deliberate — it previously reported SUCCESS while ingesting
-  nothing. The same key backs the VAMA Gemini fallback in `vama_parser`.
+- **VinFast extraction is blocked on Google Search grounding quota, not on the
+  key.** The key lives in the Databricks secret `news-signal/gemini-api-key` and
+  works — but every *grounded* call returns `429 RESOURCE_EXHAUSTED` while
+  ungrounded calls on the same key return 200, i.e. the key's Google project has no
+  grounding allowance. Grounding is the whole mechanism of
+  `15_vinfast_ai_search_assisted_extract`, so it stays blocked; removing grounding
+  would turn it into a model inventing sales figures. Enabling billing on that
+  Google project is the fix. `docs/gemini_key.md` has the detail.
+  The VAMA Gemini fallback does **not** use grounding and is working again.
 - Hyundai `2026-05` has no source candidate at all (discovery found none), so that
   month is absent for a different reason than the two lost ones.
