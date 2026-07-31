@@ -43,11 +43,20 @@ PATTERNS = [
     ("short_0", "https://thanhcong.vn/tin-tuc/thong-bao-ket-qua-ban-hang-hyundai-thang-{mm}-{y}.html"),
     ("tc_group_xe", "https://thanhcong.vn/tin-tuc/tc-group-thong-bao-ket-qua-ban-hang-xe-hyundai-thang-{m}-{y}.html"),
     ("tc_group_xe_0", "https://thanhcong.vn/tin-tuc/tc-group-thong-bao-ket-qua-ban-hang-xe-hyundai-thang-{mm}-{y}.html"),
+    # 2026-05 was published without "hyundai" anywhere in the slug:
+    # tc-group-thong-bao-ket-qua-ban-hang-thang-5-2026.html
+    # Every other pattern here requires the brand name, which is why that month
+    # showed up as "no source candidate" rather than as a fetch failure.
+    ("tc_group_no_brand", "https://thanhcong.vn/tin-tuc/tc-group-thong-bao-ket-qua-ban-hang-thang-{m}-{y}.html"),
+    ("tc_group_no_brand_0", "https://thanhcong.vn/tin-tuc/tc-group-thong-bao-ket-qua-ban-hang-thang-{mm}-{y}.html"),
 ]
 
 STRICT_SALES_HINTS = (
     "ket-qua-ban-hang-hyundai",
     "ket-qua-ban-hang-xe-hyundai",
+    # Brand-less variants: a TC Group / Thanh Cong monthly sales announcement.
+    "tc-group-thong-bao-ket-qua-ban-hang-thang",
+    "tap-doan-thanh-cong-thong-bao-ket-qua-ban-hang-thang",
 )
 
 
@@ -105,9 +114,10 @@ def month_from_url(url: str):
 
 def is_likely_hyundai_sales_url(url: str):
     low = url.lower()
-    if "hyundai" not in low:
-        return False
     # Exclude global-sales or prize-program articles that happen to include "ban-hang".
+    # Requiring "hyundai" in the slug used to be the first gate, but TC Group does
+    # not always put the brand in it (see 2026-05), so the hints carry that weight
+    # now: they are specific enough to be a monthly sales announcement on their own.
     return any(hint in low for hint in STRICT_SALES_HINTS)
 
 

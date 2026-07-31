@@ -188,9 +188,9 @@ again — that is all they can do.
 | --- | --- | --- |
 | `vama.sales_by_model_region` | 12,802 | 2026-05 |
 | `vama.sales_by_other_makers` | 506 | 2026-06 |
-| `hyundai_vinfast.hyundai_sales_by_model` | 435 | 2026-06 |
+| `hyundai_vinfast.hyundai_sales_by_model` | 447 | 2026-06 |
 | `hyundai_vinfast.vinfast_sales_by_model` | 151 | 2026-06 |
-| `automobile.curated_vietnam_auto_sales_unified` | 13,894 | 2026-06 |
+| `automobile.curated_vietnam_auto_sales_unified` | 13,895 | 2026-06 |
 
 The incremental extract was verified against a pre-change snapshot: no month lost
 rows, `2026-05` added (+88), and `parsing_method='llm'` held at exactly 2,390 —
