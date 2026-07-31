@@ -84,12 +84,8 @@ changed, two months gained, 136 → 151 rows.
 
 ## Still open
 
-**`2024-03` and `2024-05` are still wrong.** The IR index does not reach 2024, so
-they cannot be re-derived from this source, and they were not corrected by this
-work. Note that the older `vinfast_raw_sources` table (below) has no 2024-03 or
-2024-05 either — which suggests VinFast published no monthly release for those
-months and the rows should not exist at all, rather than merely holding wrong
-values. Deciding what to do with them is a data call, not a code one.
+**`2024-03` and `2024-05` were deleted on 2026-07-30** (11 rows). They are not a
+gap that can be filled — see the section below.
 
 **There is a richer source already fetched.** `vinfast_raw_sources` — a *different*
 table from the `vinfast_ir_sources` this branch writes — holds 22 fetched
@@ -104,6 +100,44 @@ discovery source in notebook 16 would extend coverage considerably. Not done her
 `vinfast_ir_sources` is the one this branch writes. Notebook 16 originally targeted
 the former, and `CREATE TABLE IF NOT EXISTS` silently did nothing against the
 existing schema — the MERGE then failed on an unresolvable `url` column.
+
+## Why 2024-03 and 2024-05 cannot be filled
+
+VinFast **did not publish monthly delivery figures for most of 2024**. It reported
+monthly by model through July 2023, switched to quarterly, and only resumed monthly
+Vietnam releases in November 2024.
+
+Evidence, in descending order of strength:
+
+- **VinFast's own sitemap.** A full crawl of `vinfast.vn` (1,040 URLs across 12
+  sub-sitemaps) contains exactly **two** 2024 monthly delivery articles: November
+  2024 and December 2024. Nothing for March or May. This is the publisher's entire
+  archive, not a search result.
+- **The Q1 2024 6-K** (`tm2411945d1_ex99-1.htm`) reports *quarterly only*: "EV
+  Deliveries 9,689" for 1Q2024, against 13,513 for 4Q2023 and 1,780 for 1Q2023. No
+  monthly split anywhere in the filing.
+- **The H1 2024 release** likewise gives Q2 2024 = 12,058 and H1 = 21,747, with no
+  monthly or per-model breakdown.
+- **Vietnamese Wikipedia's VinFast sales table** is monthly by model through July
+  2023, then quarterly, then a 2024 annual figure only.
+
+The stored values were also arithmetically impossible, which is independent of
+sourcing. Both are **global** ceilings, and Vietnam is a subset:
+
+| Month | Was stored | Official quarterly ceiling | |
+| --- | --- | --- | --- |
+| `2024-03` | 27,609 | Q1 2024 = **9,689** for all three months | 2.8× the whole quarter |
+| `2024-05` | 11,496 | Q2 2024 = **12,058** for all three months | leaves 562 for April + June |
+
+So the rows were deleted rather than corrected. Absence is the truthful state, and
+it matches how 2023-06 and 2023-08..2024-06 are already absent. Backup of the 11
+deleted rows was taken before the delete.
+
+**Do not "fill" these from third-party estimates.** Registration-based or
+press-estimated monthly numbers are not what the rest of this table contains, and
+mixing them in silently is a milder version of the bug that created the problem.
+If quarterly figures are ever wanted, they exist and are official — but the table's
+grain is monthly, and Q1/Q2 2024 are global rather than Vietnam.
 
 ## Notebook 15
 

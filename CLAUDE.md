@@ -105,11 +105,13 @@ banking FX work, unrelated to automobiles. It is in `EXCLUDE` in
   (2024-12, 2025-10) can no longer be derived — the source articles are gone from
   the site — so they will report as skipped on every run. That is correct
   behaviour now, not a failure.
-- **`2024-03` and `2024-05` in `vinfast_sales_by_model` hold the wrong months'
-  figures** (`2026-03` and `2025-05` respectively) — search grounding picked the
-  wrong article. They are stored `warning`, not `fail`, and the curated view does
-  not filter on `validation_status` at all, so they reach gold. Not corrected: the
-  IR index does not reach 2024. `docs/vinfast_crawl.md` has the evidence.
+- **VinFast published no monthly figures for most of 2024** (monthly by model
+  through 2023-07, then quarterly, resuming 2024-11). `2024-03` and `2024-05` held
+  other months' figures and were deleted 2026-07-30. Do not try to "fill" them, and
+  do not accept a source claiming a monthly 2024 number without checking it against
+  the quarterly totals — Q1 2024 was 9,689 *globally*. `docs/vinfast_crawl.md`.
+- The curated VinFast view does **not** filter on `validation_status`, so `warning`
+  and `fail` rows reach gold unchanged. Worth knowing before trusting a row count.
 - Nothing needs **Google Search grounding** any more; the VinFast rewrite designed
   it out, and the key's project has no grounding quota anyway. Do not reintroduce a
   grounded call without reading `docs/gemini_key.md`.
