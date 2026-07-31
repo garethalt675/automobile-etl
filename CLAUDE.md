@@ -1,7 +1,19 @@
 # automobile-etl — working notes for Claude
 
+**Picking this up fresh? Read `docs/handoff_2026-07-31.md` first** — current state,
+the one open bug, and what changed most recently.
+
 Read `README.md` for the pipeline map and `docs/state_2026-07-30.md` for what the
 data actually looks like. This file is only the things that will bite you.
+
+## Open right now: VAMA 2026-06 extracts zero rows and reports success
+
+`3_Extract_Tables` produced 0 rows for the June 2026 detail document while
+`extraction_status = 'success'`. The PDF downloaded and parsed fine (3,240 cells in
+`extracted_tables_long`). Suspected cause is an unresolved year-to-date header —
+June has `col_8` where May has `Sales - YTM 2026`. ~24,000 units missing from gold,
+and nothing will flag it on the 15th. Detail and a read-only test query are in
+`docs/handoff_2026-07-31.md`.
 
 ## The workspace is authoritative, not this repo
 
