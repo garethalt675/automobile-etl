@@ -7,11 +7,18 @@ from Databricks with read-only SQL; nothing here is inferred from the notebooks.
 Subject: `market_data.automobile.curated_vietnam_auto_sales_unified` (13,895 rows)
 and its companion `auto_sales_source_quality`.
 
+> **Update, later the same day.** Finding 1 (2026-06) has been **fixed** — the 87
+> destroyed rows were restored from Delta `VERSION AS OF 50`, taking June from 418
+> to 23,946 units. See `docs/vama_june_2026_restore.md`. Everything else below
+> still stands, and the figures in this report are the pre-restore measurements
+> unless marked otherwise.
+
 ## Verdict
 
 **The monthly-total column is broadly trustworthy for VAMA back-history. The
-year-to-date columns are not usable at all, the newest month (2026-06) is 98%
-empty, and the quality view reports every one of these problems as `pass`.**
+year-to-date columns are not usable at all, the newest month (2026-06) was 98%
+empty until restored, and the quality view reported every one of these problems
+as `pass`.**
 
 The most damaging property of this dataset is not any single wrong number — it is
 that `validation_status` and `is_analytics_ready` are hardcoded literals for 99%
@@ -58,7 +65,7 @@ ingested.
 
 ## Critical
 
-### 1. 2026-06 is present but 98.3% empty, and nothing will fix it
+### 1. 2026-06 was present but 98.3% empty — FIXED 2026-08-01
 
 June 2026 carries **418 units against a true ~24,356** (the published PDF's own
 grand-total row, per `docs/handoff_2026-07-31.md`).
@@ -88,8 +95,12 @@ parsed_ts          2026-07-30T01:48:10Z   (older, so no re-parse trigger)
 The incremental filter in `3_Extract_Tables` selects documents where
 `extraction_status IS NULL OR = 'failed' OR extraction_timestamp IS NULL OR
 parsed_timestamp > extraction_timestamp`. All four are false here, so the
-15 August run **skips this document**. Recovering June needs an explicit
-`only_months=2026-06` or `reextract_all=true` run.
+15 August run would have **skipped this document**.
+
+**Resolved.** The 87 rows were never really gone — they sat one Delta version
+back, and no `VACUUM` had run. Restored insert-only from `VERSION AS OF 50` on
+2026-08-01; June is now 90 rows / 23,946 units. Root cause and method in
+`docs/vama_june_2026_restore.md`.
 
 ### 2. Every YTD column is structurally wrong across the whole history
 
@@ -257,21 +268,21 @@ overlap window is real.
 
 | Column group | Verdict |
 | --- | --- |
-| `monthly_total`, `monthly_north/central/south` | **Usable with caveats** — 85% populated, ~3.4% systematic under-read from row misalignment, 2026-06 unusable |
+| `monthly_total`, `monthly_north/central/south` | **Usable with caveats** — 85% populated, ~3.4% systematic under-read from row misalignment (2026-06 restored 2026-08-01) |
 | `ytd_north/central/south/total` | **Do not use** — structurally wrong across the full history |
 | `validation_status`, `is_analytics_ready` | **Do not use** — hardcoded for 99% of rows |
 | `report_month` | Reliable except 107 NULL rows |
 | `maker`, `model_name` | Reliable except 24 junk makers, 66 NULL models, and unflagged aggregates |
 
 Safe aggregate query today: sum `monthly_total`, filter
-`report_month IS NOT NULL AND report_month <> '2026-06'`, and exclude
+`report_month IS NOT NULL`, and exclude
 `model_name IN ('XE THƯƠNG MẠI','Mẫu khác','Other models','TOTAL_UNSPECIFIED')`
 for model-level work.
 
 ## Recommended order of work
 
-1. **Re-extract 2026-06** (`only_months=2026-06`). Restores ~24,000 units.
-   Highest impact, smallest change.
+1. ~~**Re-extract 2026-06**~~ — **done 2026-08-01**, restored from Delta rather
+   than re-extracted. `docs/vama_june_2026_restore.md`.
 2. **Stop the QA layer lying.** Replace the hardcoded `'pass'` / `true` in
    `90_build_automobile_unified_sales.py` with the real status from
    `hyundai_monthly_validation`, and add a month-over-month volume check so a

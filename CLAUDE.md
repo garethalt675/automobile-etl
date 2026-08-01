@@ -6,14 +6,36 @@ the one open bug, and what changed most recently.
 Read `README.md` for the pipeline map and `docs/state_2026-07-30.md` for what the
 data actually looks like. This file is only the things that will bite you.
 
-## Open right now: VAMA 2026-06 extracts zero rows and reports success
+## CLOSED 2026-08-01: VAMA 2026-06 zero rows — data restored
 
-`3_Extract_Tables` produced 0 rows for the June 2026 detail document while
-`extraction_status = 'success'`. The PDF downloaded and parsed fine (3,240 cells in
-`extracted_tables_long`). Suspected cause is an unresolved year-to-date header —
-June has `col_8` where May has `Sales - YTM 2026`. ~24,000 units missing from gold,
-and nothing will flag it on the 15th. Detail and a read-only test query are in
-`docs/handoff_2026-07-31.md`.
+The 87 rows were extracted correctly, then deleted 15 seconds later by the Gemini
+fallback, which re-parsed to nothing and never replaced them. Verified from the
+Delta history, not inferred:
+
+```
+v50  2026-07-30T01:49:56  MERGE   175 rows written  <- HTML extract, June's 87 among them
+v51  2026-07-30T01:50:11  DELETE   87 rows removed  <- document_id = a8d5c421a1c7f7b9
+```
+
+Restored 2026-08-01 (v53) by inserting those same rows straight back from
+`VERSION AS OF 50` — insert-only, anti-joined on
+`(document_id, source_table_index, source_row_index)` so a re-run is a no-op
+(v54 inserted 0). June is now **90 rows / 23,946 units** in gold.
+
+`monthly_total` was verified correct against the published PDF maker by maker
+(Toyota 6,494, Mitsubishi 3,158, Ford 2,741, THACO MAZDA 2,361, Isuzu 900,
+Suzuki 654, SAMCO 10 — all matching the PDF's own sub-totals). `ytd_total` in
+those rows is shifted by one position, which is the table-wide defect below, not
+something June-specific.
+
+Two things worth keeping:
+
+- **The extractor was never the problem.** The header hypothesis in the
+  2026-07-31 handoff (`col_8` vs `Sales - YTM 2026`) was wrong; both months carry
+  the header. Do not go looking for it again.
+- June still under-reads the PDF by 828 units (23,528 vs a true 24,356), ~3.4%.
+  That is the row-misalignment defect that affects every month, and one THACO KIA
+  row (409 units) that the extract misses. Not June-specific either.
 
 ## The workspace is authoritative, not this repo
 
