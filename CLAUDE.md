@@ -37,12 +37,15 @@ to import `vama_parser`, which a Git checkout path would break.
 `vama_extract_other_makers` after `vama_extract`. Both matter — reversing either
 silently drops data rather than failing. `docs/monthly_workflow.md` explains why.
 
-## `diff` has one expected difference
+## `diff` should now come back clean
 
-`automobile/90_build_automobile_unified_sales.py` will report as differing until
-someone pushes. That is the stale duplicate reconciliation described in
-`docs/unified_notebook_duplicate.md` — not drift you introduced. Every other
-difference is real.
+As of 2026-08-01, `python scripts/databricks_sync.py diff` reports
+**0 workspace-only, 0 repo-only, 0 differing** — repo and workspace are in sync.
+
+`automobile/90_build_automobile_unified_sales.py` used to be listed here as an
+expected difference (the stale duplicate described in
+`docs/unified_notebook_duplicate.md`). It no longer differs, so that exception is
+retired: **treat any difference `diff` reports as real.**
 
 ## The raw source tables are the only copy — never let a failure overwrite them
 
@@ -113,10 +116,19 @@ banking FX work, unrelated to automobiles. It is in `EXCLUDE` in
 - The Gemini fallback excludes `parsing_method='llm'` rows from validation, so the
   2,390 rows in that state are never re-checked.
 - `05_hyundai_refill_prose_missing_months` has a hardcoded `TARGET_MONTHS` list; a
-  new prose-format month needs a code change to be picked up. Two of its six months
-  (2024-12, 2025-10) can no longer be derived — the source articles are gone from
-  the site — so they will report as skipped on every run. That is correct
-  behaviour now, not a failure.
+  new prose-format month needs a code change to be picked up.
+- **2024-12 and 2025-10 are recoverable after all** (established 2026-08-01,
+  reversing the earlier "gone from the site" finding). The articles were never
+  missing — `hyundai.thanhcong.vn` is a Nuxt SPA, so a plain HTTP fetch returns a
+  shell with no article body, and every check that read that shell concluded the
+  source was gone. The publisher's own JSON index lists all 67 monthly releases
+  from 2021-03 to 2026-06 with no gaps. Both months were pulled and reconcile
+  exactly (2024-12: 8,316 / YTD 67,168 · 2025-10: 5,260 / YTD 41,062). Endpoints,
+  the required legacy-TLS setting, the right-align parsing rule and the full
+  figures are in `docs/hyundai_api_recovery.md`. Nothing is ingested yet.
+  Beware: model names appear in that shell HTML as product-menu entries, so a
+  keyword check finds hits while the table is still absent — and the article's
+  `Doanh so ….jpg` attachment is a press photo, not the sales table.
 - **VinFast published no monthly figures for most of 2024** (monthly by model
   through 2023-07, then quarterly, resuming 2024-11). `2024-03` and `2024-05` held
   other months' figures and were deleted 2026-07-30. Do not try to "fill" them, and

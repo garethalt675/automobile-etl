@@ -278,14 +278,30 @@ def is_excluded_maker(maker_value):
     return any(excluded.lower() in maker_lower for excluded in EXCLUDED_MAKERS)
 
 def detect_column_structure(header, report_year=None, report_month=None):
-    """Detect column structure using SIMPLIFIED FIXED OFFSETS."""
+    """Locate the monthly and year-to-date column blocks from the header.
+
+    This used to derive every data column from fixed offsets, assuming the
+    year-to-date block began immediately after the four monthly columns. It does
+    not: in the usual VAMA detail layout a 'Share' column sits between them, so
+    the whole YTD block was read one column early. The damage was invisible
+    because it stayed self-consistent - ytd_north picked up the monthly share
+    percentage ('11.0%', which to_int returns None for, leaving 42% of rows with a
+    NULL ytd_north), and ytd_total ended up holding the YTD *South* regional
+    figure while the true YTD total was never read at all. 777 rows ended up with
+    ytd_total < monthly_total, which cannot happen for a real year-to-date number.
+
+    The YTD block is now found by its own header ('Sales - YTM <year>'), which is
+    also the only thing that survives the layout moving between column 8, 9 and 10
+    across report years. The share-column skip is the fallback when that header
+    did not survive parsing.
+    """
     header_clean = [clean_cell(c).lower() for c in header]
-    
+
     maker_idx = None
     model_idx = None
     classification_idx = None
     seat_idx = None
-    
+
     for i, h in enumerate(header_clean):
         if 'maker' in h and maker_idx is None:
             maker_idx = i
@@ -295,15 +311,28 @@ def detect_column_structure(header, report_year=None, report_month=None):
             classification_idx = i
         if 'seat' in h and seat_idx is None:
             seat_idx = i
-    
+
     if maker_idx is None or model_idx is None or classification_idx is None:
         return None
-    
+
     metadata_end = max(maker_idx, model_idx, classification_idx)
     if seat_idx is not None and seat_idx > metadata_end:
         metadata_end = seat_idx
     data_start = metadata_end + 1
-    
+
+    share_indices = {i for i, h in enumerate(header_clean) if 'share' in h}
+
+    ytd_start = None
+    for i, h in enumerate(header_clean):
+        if i > data_start and ('ytm' in h or 'ytd' in h or 'year to date' in h):
+            ytd_start = i
+            break
+
+    if ytd_start is None:
+        ytd_start = data_start + 4
+        if ytd_start in share_indices:
+            ytd_start += 1
+
     col_map = {
         'maker': maker_idx,
         'model': model_idx,
@@ -314,13 +343,13 @@ def detect_column_structure(header, report_year=None, report_month=None):
         'monthly_south': data_start + 2,
         'monthly_total': data_start + 3,
         'monthly_share': None,
-        'ytd_north': data_start + 4,
-        'ytd_central': data_start + 5,
-        'ytd_south': data_start + 6,
-        'ytd_total': data_start + 7,
+        'ytd_north': ytd_start,
+        'ytd_central': ytd_start + 1,
+        'ytd_south': ytd_start + 2,
+        'ytd_total': ytd_start + 3,
         'ytd_share': None,
     }
-    
+
     return col_map
 
 def extract_sales_rows_from_table(doc, table, table_idx, debug=False):
@@ -332,7 +361,26 @@ def extract_sales_rows_from_table(doc, table, table_idx, debug=False):
         if debug:
             print(f"  ⚠️ Could not detect column structure for table {table_idx}")
         return rows
-    
+
+    # Rows are not all the same width as the header. A model with no sales in the
+    # report month comes back without its 'Share' cells at all - 12 wide against a
+    # 14-wide header - which slides the year-to-date block one column left for that
+    # row only. A single per-table index is therefore wrong for one shape or the
+    # other; before this was handled, those short rows were read with the YTD block
+    # off by one and then dropped for having no total.
+    header_cells = [clean_cell(c).lower() for c in table[0]]
+    header_width = len(table[0])
+    share_positions = [i for i, h in enumerate(header_cells) if 'share' in h]
+
+    def map_for_row(cells):
+        """col_map adjusted for a row that omitted its share columns."""
+        if not share_positions or len(cells) != header_width - len(share_positions):
+            return col_map
+        return {
+            key: (None if idx is None else idx - sum(1 for s in share_positions if s < idx))
+            for key, idx in col_map.items()
+        }
+
     now = datetime.utcnow()
     year = doc['report_year']
     month = doc['report_month']
@@ -352,17 +400,18 @@ def extract_sales_rows_from_table(doc, table, table_idx, debug=False):
             continue
             
         cells = [clean_cell(c) for c in row]
-        max_col_needed = max([v for v in col_map.values() if v is not None])
+        row_map = map_for_row(cells)
+        max_col_needed = max([v for v in row_map.values() if v is not None])
         if len(cells) <= max_col_needed:
             cells += [''] * (max_col_needed - len(cells) + 1)
-        
+
         if is_noise_row(cells):
             continue
-        
-        maker = cells[col_map['maker']]
-        model = cells[col_map['model']]
-        classification = cells[col_map['classification']]
-        seat = cells[col_map['seat']] if col_map['seat'] is not None else ''
+
+        maker = cells[row_map['maker']]
+        model = cells[row_map['model']]
+        classification = cells[row_map['classification']]
+        seat = cells[row_map['seat']] if row_map['seat'] is not None else ''
         
         # NEW: Skip excluded makers (Lexus, BMW, MBV)
         if is_excluded_maker(maker):
@@ -381,13 +430,13 @@ def extract_sales_rows_from_table(doc, table, table_idx, debug=False):
         if 'grand' in model_lower and 'total' in model_lower:
             continue
         
-        monthly_total = to_int(cells[col_map['monthly_total']])
-        ytd_total = to_int(cells[col_map['ytd_total']])
+        monthly_total = to_int(cells[row_map['monthly_total']])
+        ytd_total = to_int(cells[row_map['ytd_total']])
         if monthly_total is None and ytd_total is None:
             continue
-        
-        monthly_share = to_share(cells[col_map['monthly_share']]) if col_map['monthly_share'] is not None else None
-        ytd_share = to_share(cells[col_map['ytd_share']]) if col_map['ytd_share'] is not None else None
+
+        monthly_share = to_share(cells[row_map['monthly_share']]) if row_map['monthly_share'] is not None else None
+        ytd_share = to_share(cells[row_map['ytd_share']]) if row_map['ytd_share'] is not None else None
         
         rows.append({
             'document_id': doc['document_id'],
@@ -401,14 +450,14 @@ def extract_sales_rows_from_table(doc, table, table_idx, debug=False):
             'model_name': model,
             'vama_classification': classification,
             'seat': seat,
-            'monthly_north': to_int(cells[col_map['monthly_north']]),
-            'monthly_central': to_int(cells[col_map['monthly_central']]),
-            'monthly_south': to_int(cells[col_map['monthly_south']]),
+            'monthly_north': to_int(cells[row_map['monthly_north']]),
+            'monthly_central': to_int(cells[row_map['monthly_central']]),
+            'monthly_south': to_int(cells[row_map['monthly_south']]),
             'monthly_total': monthly_total,
             'monthly_share': monthly_share,
-            'ytd_north': to_int(cells[col_map['ytd_north']]),
-            'ytd_central': to_int(cells[col_map['ytd_central']]),
-            'ytd_south': to_int(cells[col_map['ytd_south']]),
+            'ytd_north': to_int(cells[row_map['ytd_north']]),
+            'ytd_central': to_int(cells[row_map['ytd_central']]),
+            'ytd_south': to_int(cells[row_map['ytd_south']]),
             'ytd_total': ytd_total,
             'ytd_share': ytd_share,
             'source_table_index': table_idx,
@@ -543,8 +592,25 @@ for doc_row in raw_docs:
                         'extracted_timestamp': now,
                         'parsing_method': 'html'
                     })
-        sales_rows.extend(extract_sales_rows(doc, tables))
-        status_rows.append((doc['document_id'], 'success', None, len(tables), now))
+        doc_sales_rows = extract_sales_rows(doc, tables)
+        sales_rows.extend(doc_sales_rows)
+        # A detail document that parses but yields no sales rows is a failure, not a
+        # success. Reporting 'success' here is what let 2026-06 lose ~24,000 units
+        # silently: the status kept the document out of the incremental re-extract
+        # filter and out of the LLM fallback, so nothing ever retried it and nothing
+        # flagged it. Only 'detail' documents carry model rows - 'other' report types
+        # are handled by 3b Extract Other Makers, so zero rows there is expected.
+        if doc['report_type'] == 'detail' and not doc_sales_rows:
+            status_rows.append((
+                doc['document_id'],
+                'failed',
+                f"Detail document parsed {len(tables)} table(s) but produced 0 sales rows",
+                0,
+                now,
+            ))
+            print(f"FAILED {doc['document_id']}: detail document produced 0 sales rows from {len(tables)} table(s)")
+        else:
+            status_rows.append((doc['document_id'], 'success', None, len(doc_sales_rows), now))
     except Exception as e:
         status_rows.append((doc['document_id'], 'failed', str(e), 0, datetime.utcnow()))
         print(f"FAILED {doc['document_id']}: {e}")
@@ -827,12 +893,26 @@ grand_total_source AS (
     WHERE etl.column_index BETWEEN 4 AND 7
       AND etl.cell_value RLIKE '[0-9]'
   )
-  SELECT 
+  SELECT
     document_id,
     report_month_key,
     MAX(CASE WHEN column_index = 7 THEN numeric_value END) as source_total
   FROM grand_total_values
   GROUP BY document_id, report_month_key
+  -- Only trust the grand-total row when its own regional cells reconcile to the
+  -- total sitting at column 7. Reading column 7 as "the total" is a positional
+  -- assumption, and it is wrong whenever the parser misaligns that row: in
+  -- 2026-06 the row was shifted three columns, so column 7 held a year-to-date
+  -- figure (30,611) and the document was scored a 23% error against a number that
+  -- was never its monthly total. That false failure is what sent an otherwise
+  -- good month into the destructive Gemini fallback below. A row that does not
+  -- add up is unusable evidence - leave the document unjudged rather than
+  -- declaring it broken. 2026-05 reconciles (10,145 + 4,871 + 9,120 = 24,136)
+  -- and is unaffected.
+  HAVING MAX(CASE WHEN column_index = 4 THEN numeric_value END)
+       + MAX(CASE WHEN column_index = 5 THEN numeric_value END)
+       + MAX(CASE WHEN column_index = 6 THEN numeric_value END)
+       = MAX(CASE WHEN column_index = 7 THEN numeric_value END)
 )
 SELECT DISTINCT
   e.document_id,
@@ -901,15 +981,14 @@ else:
         print(f"\n[{idx}/{len(failed_docs)}] 📄 Processing: {doc_id} ({metadata['filename']})")
         print(f"    URL: {metadata['document_url'][:80]}...")
         
-        # Step 1: Delete incorrect HTML-parsed rows
-        print(f"  ⌫ Deleting incorrect HTML-parsed data...")
-        spark.sql(f"""
-        DELETE FROM {CATALOG}.{SCHEMA}.sales_by_model_region
-        WHERE document_id = '{doc_id}'
-        """)
-        print(f"    Deleted rows with parsing_method='html'")
-        
-        # Step 2: Call Gemini parser using the professional package
+        # Step 1: Call Gemini parser using the professional package.
+        #
+        # The existing HTML rows are deliberately NOT deleted here. Deleting first and
+        # re-inserting only on success is what destroyed 2026-06: the HTML extract had
+        # written 87 good rows, validation flagged the document, this cell deleted them,
+        # the Gemini re-parse then produced nothing, and the month was left empty while
+        # document_processing_log still said 'success'. The delete now happens further
+        # down, only once replacement rows actually exist in the _gemini table.
         print(f"  🔮 Calling Gemini parser (timeout: 10 minutes)...")
         start_time = datetime.now()
         
@@ -938,8 +1017,31 @@ else:
             if result['status'] == 'success':
                 print(f"    Gemini parsing completed in {elapsed_time:.1f} seconds")
                 print(f"    Extracted {result['rows_written']} rows")
-                
-                # Step 3: Copy Gemini results to main table with parsing_method='llm' - NULL out market share columns
+
+                # Step 2: Materialise the replacement before removing anything. A
+                # 'success' status from the parser is not sufficient evidence that rows
+                # landed - check the table itself.
+                gemini_rows = spark.sql(f"""
+                SELECT COUNT(*) AS cnt
+                FROM {CATALOG}.{SCHEMA}.sales_by_model_region_gemini
+                WHERE document_id = '{doc_id}'
+                """).collect()[0].cnt
+
+                if gemini_rows == 0:
+                    raise Exception(
+                        "Gemini reported success but wrote 0 rows to "
+                        f"sales_by_model_region_gemini for {doc_id}; keeping existing rows"
+                    )
+
+                print(f"    Gemini produced {gemini_rows} replacement rows")
+
+                # Step 3: Now that a replacement exists, swap it in.
+                print(f"  ⌫ Removing superseded rows for {doc_id}...")
+                spark.sql(f"""
+                DELETE FROM {CATALOG}.{SCHEMA}.sales_by_model_region
+                WHERE document_id = '{doc_id}'
+                """)
+
                 print(f"  📥 Copying Gemini results to main table...")
                 spark.sql(f"""
                 INSERT INTO {CATALOG}.{SCHEMA}.sales_by_model_region
@@ -1015,7 +1117,22 @@ else:
             print(f"  ✗ Gemini parsing failed after {elapsed_time:.1f} seconds:")
             print(f"    Error type: {error_details['error_type']}")
             print(f"    Message: {error_details['error_message'][:200]}")
-            
+
+            # Record the failure. Without this the document keeps the 'success' the
+            # HTML extract gave it earlier in the run, so a month that lost its rows
+            # here looks healthy in document_processing_log and is never retried -
+            # which is precisely how 2026-06 stayed invisible.
+            safe_error = error_details['error_message'].replace("'", "''")[:500]
+            spark.sql(f"""
+            UPDATE {CATALOG}.{SCHEMA}.document_processing_log
+            SET
+              extraction_status = 'failed_llm_fallback',
+              extraction_error_message = '{safe_error}',
+              extraction_timestamp = current_timestamp(),
+              updated_at = current_timestamp()
+            WHERE document_id = '{doc_id}'
+            """)
+
             # Only print full traceback for non-timeout errors
             if 'timeout' not in str(e).lower():
                 print(f"\nFull traceback:\n{error_details['traceback']}\n")
