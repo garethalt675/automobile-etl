@@ -844,12 +844,26 @@ grand_total_source AS (
     WHERE etl.column_index BETWEEN 4 AND 7
       AND etl.cell_value RLIKE '[0-9]'
   )
-  SELECT 
+  SELECT
     document_id,
     report_month_key,
     MAX(CASE WHEN column_index = 7 THEN numeric_value END) as source_total
   FROM grand_total_values
   GROUP BY document_id, report_month_key
+  -- Only trust the grand-total row when its own regional cells reconcile to the
+  -- total sitting at column 7. Reading column 7 as "the total" is a positional
+  -- assumption, and it is wrong whenever the parser misaligns that row: in
+  -- 2026-06 the row was shifted three columns, so column 7 held a year-to-date
+  -- figure (30,611) and the document was scored a 23% error against a number that
+  -- was never its monthly total. That false failure is what sent an otherwise
+  -- good month into the destructive Gemini fallback below. A row that does not
+  -- add up is unusable evidence - leave the document unjudged rather than
+  -- declaring it broken. 2026-05 reconciles (10,145 + 4,871 + 9,120 = 24,136)
+  -- and is unaffected.
+  HAVING MAX(CASE WHEN column_index = 4 THEN numeric_value END)
+       + MAX(CASE WHEN column_index = 5 THEN numeric_value END)
+       + MAX(CASE WHEN column_index = 6 THEN numeric_value END)
+       = MAX(CASE WHEN column_index = 7 THEN numeric_value END)
 )
 SELECT DISTINCT
   e.document_id,
@@ -918,15 +932,14 @@ else:
         print(f"\n[{idx}/{len(failed_docs)}] 📄 Processing: {doc_id} ({metadata['filename']})")
         print(f"    URL: {metadata['document_url'][:80]}...")
         
-        # Step 1: Delete incorrect HTML-parsed rows
-        print(f"  ⌫ Deleting incorrect HTML-parsed data...")
-        spark.sql(f"""
-        DELETE FROM {CATALOG}.{SCHEMA}.sales_by_model_region
-        WHERE document_id = '{doc_id}'
-        """)
-        print(f"    Deleted rows with parsing_method='html'")
-        
-        # Step 2: Call Gemini parser using the professional package
+        # Step 1: Call Gemini parser using the professional package.
+        #
+        # The existing HTML rows are deliberately NOT deleted here. Deleting first and
+        # re-inserting only on success is what destroyed 2026-06: the HTML extract had
+        # written 87 good rows, validation flagged the document, this cell deleted them,
+        # the Gemini re-parse then produced nothing, and the month was left empty while
+        # document_processing_log still said 'success'. The delete now happens further
+        # down, only once replacement rows actually exist in the _gemini table.
         print(f"  🔮 Calling Gemini parser (timeout: 10 minutes)...")
         start_time = datetime.now()
         
@@ -955,8 +968,31 @@ else:
             if result['status'] == 'success':
                 print(f"    Gemini parsing completed in {elapsed_time:.1f} seconds")
                 print(f"    Extracted {result['rows_written']} rows")
-                
-                # Step 3: Copy Gemini results to main table with parsing_method='llm' - NULL out market share columns
+
+                # Step 2: Materialise the replacement before removing anything. A
+                # 'success' status from the parser is not sufficient evidence that rows
+                # landed - check the table itself.
+                gemini_rows = spark.sql(f"""
+                SELECT COUNT(*) AS cnt
+                FROM {CATALOG}.{SCHEMA}.sales_by_model_region_gemini
+                WHERE document_id = '{doc_id}'
+                """).collect()[0].cnt
+
+                if gemini_rows == 0:
+                    raise Exception(
+                        "Gemini reported success but wrote 0 rows to "
+                        f"sales_by_model_region_gemini for {doc_id}; keeping existing rows"
+                    )
+
+                print(f"    Gemini produced {gemini_rows} replacement rows")
+
+                # Step 3: Now that a replacement exists, swap it in.
+                print(f"  ⌫ Removing superseded rows for {doc_id}...")
+                spark.sql(f"""
+                DELETE FROM {CATALOG}.{SCHEMA}.sales_by_model_region
+                WHERE document_id = '{doc_id}'
+                """)
+
                 print(f"  📥 Copying Gemini results to main table...")
                 spark.sql(f"""
                 INSERT INTO {CATALOG}.{SCHEMA}.sales_by_model_region
@@ -1032,7 +1068,22 @@ else:
             print(f"  ✗ Gemini parsing failed after {elapsed_time:.1f} seconds:")
             print(f"    Error type: {error_details['error_type']}")
             print(f"    Message: {error_details['error_message'][:200]}")
-            
+
+            # Record the failure. Without this the document keeps the 'success' the
+            # HTML extract gave it earlier in the run, so a month that lost its rows
+            # here looks healthy in document_processing_log and is never retried -
+            # which is precisely how 2026-06 stayed invisible.
+            safe_error = error_details['error_message'].replace("'", "''")[:500]
+            spark.sql(f"""
+            UPDATE {CATALOG}.{SCHEMA}.document_processing_log
+            SET
+              extraction_status = 'failed_llm_fallback',
+              extraction_error_message = '{safe_error}',
+              extraction_timestamp = current_timestamp(),
+              updated_at = current_timestamp()
+            WHERE document_id = '{doc_id}'
+            """)
+
             # Only print full traceback for non-timeout errors
             if 'timeout' not in str(e).lower():
                 print(f"\nFull traceback:\n{error_details['traceback']}\n")
