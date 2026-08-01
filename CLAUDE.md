@@ -37,12 +37,15 @@ to import `vama_parser`, which a Git checkout path would break.
 `vama_extract_other_makers` after `vama_extract`. Both matter — reversing either
 silently drops data rather than failing. `docs/monthly_workflow.md` explains why.
 
-## `diff` has one expected difference
+## `diff` should now come back clean
 
-`automobile/90_build_automobile_unified_sales.py` will report as differing until
-someone pushes. That is the stale duplicate reconciliation described in
-`docs/unified_notebook_duplicate.md` — not drift you introduced. Every other
-difference is real.
+As of 2026-08-01, `python scripts/databricks_sync.py diff` reports
+**0 workspace-only, 0 repo-only, 0 differing** — repo and workspace are in sync.
+
+`automobile/90_build_automobile_unified_sales.py` used to be listed here as an
+expected difference (the stale duplicate described in
+`docs/unified_notebook_duplicate.md`). It no longer differs, so that exception is
+retired: **treat any difference `diff` reports as real.**
 
 ## The raw source tables are the only copy — never let a failure overwrite them
 
