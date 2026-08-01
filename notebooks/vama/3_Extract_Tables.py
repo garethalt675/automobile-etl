@@ -543,8 +543,25 @@ for doc_row in raw_docs:
                         'extracted_timestamp': now,
                         'parsing_method': 'html'
                     })
-        sales_rows.extend(extract_sales_rows(doc, tables))
-        status_rows.append((doc['document_id'], 'success', None, len(tables), now))
+        doc_sales_rows = extract_sales_rows(doc, tables)
+        sales_rows.extend(doc_sales_rows)
+        # A detail document that parses but yields no sales rows is a failure, not a
+        # success. Reporting 'success' here is what let 2026-06 lose ~24,000 units
+        # silently: the status kept the document out of the incremental re-extract
+        # filter and out of the LLM fallback, so nothing ever retried it and nothing
+        # flagged it. Only 'detail' documents carry model rows - 'other' report types
+        # are handled by 3b Extract Other Makers, so zero rows there is expected.
+        if doc['report_type'] == 'detail' and not doc_sales_rows:
+            status_rows.append((
+                doc['document_id'],
+                'failed',
+                f"Detail document parsed {len(tables)} table(s) but produced 0 sales rows",
+                0,
+                now,
+            ))
+            print(f"FAILED {doc['document_id']}: detail document produced 0 sales rows from {len(tables)} table(s)")
+        else:
+            status_rows.append((doc['document_id'], 'success', None, len(doc_sales_rows), now))
     except Exception as e:
         status_rows.append((doc['document_id'], 'failed', str(e), 0, datetime.utcnow()))
         print(f"FAILED {doc['document_id']}: {e}")
